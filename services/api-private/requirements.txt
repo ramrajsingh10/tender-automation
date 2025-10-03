@@ -1,0 +1,5 @@
+fastapi
+uvicorn
+google-cloud-aiplatform>=1.111
+google-auth
+requests
