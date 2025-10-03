@@ -1,0 +1,67 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "npm: dev",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "dev"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "npm: lint",
+      "type": "shell",
+      "command": "npm",
+      "args": ["run", "lint"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "gcloud: deploy api-public",
+      "type": "shell",
+      "command": "gcloud",
+      "args": [
+        "run",
+        "deploy",
+        "api-public",
+        "--source",
+        "./services/api-public",
+        "--region",
+        "us-central1",
+        "--allow-unauthenticated"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "gcloud: deploy api-private",
+      "type": "shell",
+      "command": "gcloud",
+      "args": [
+        "run",
+        "deploy",
+        "api-private",
+        "--source",
+        "./services/api-private",
+        "--region",
+        "us-central1",
+        "--no-allow-unauthenticated"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": []
+    }
+  ]
+}
