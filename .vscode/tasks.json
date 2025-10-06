@@ -2,12 +2,12 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "npm: dev",
+      "label": "npm: web dev",
       "type": "shell",
       "command": "npm",
-      "args": ["run", "dev"],
+      "args": ["run", "web:dev"],
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": ""
       },
       "group": {
         "kind": "build",
@@ -21,7 +21,7 @@
       "command": "npm",
       "args": ["run", "lint"],
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": ""
       },
       "problemMatcher": []
     },
@@ -40,7 +40,7 @@
         "--allow-unauthenticated"
       ],
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": ""
       },
       "problemMatcher": []
     },
@@ -59,7 +59,39 @@
         "--no-allow-unauthenticated"
       ],
       "options": {
-        "cwd": "${workspaceFolder}"
+        "cwd": ""
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "python: test api-public",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "python -m pip install -r services/api-public/requirements.txt; python -m pip install pytest; pytest services/api-public"
+      ],
+      "options": {
+        "cwd": ""
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "python: test api-private",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "python -m pip install -r services/api-private/requirements.txt; python -m pip install pytest; pytest services/api-private"
+      ],
+      "options": {
+        "cwd": ""
       },
       "problemMatcher": []
     }
