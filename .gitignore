@@ -13,6 +13,10 @@
 !.yarn/plugins
 !.yarn/releases
 !.yarn/versions
+backend/app/__pycache__/
+backend/app/services/__pycache__/
+backend/app/routes/__pycache__/
+
 
 # testing
 /coverage
@@ -42,7 +46,10 @@ yarn-error.log*
 .env.development
 .env.production
 .env.test
+.env.example
 !**/.env.example
+apps/web/.env.example
+backend/cloudrun.env
 
 # vercel
 .vercel
@@ -51,3 +58,6 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 **/next-env.d.ts
+
+
+env.example/

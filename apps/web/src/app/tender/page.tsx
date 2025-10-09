@@ -1,27 +1,396 @@
-﻿export default function TenderPage() {
+'use client';
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  completeFileUpload,
+  createTenderSession,
+  FileRecord,
+  getTenderStatus,
+  initFileUpload,
+  ParseMetadata,
+  TenderSessionResponse,
+  triggerParsing,
+  uploadFileToSignedUrl,
+  UploadLimits,
+  UploadInitResponse,
+} from '@/lib/tenderApi';
+
+type LocalFileStatus = 'pending' | 'uploading' | 'uploaded' | 'failed';
+
+interface LocalFile {
+  id: string;
+  file: File;
+  status: LocalFileStatus;
+  progress: number;
+  error?: string;
+  remote?: FileRecord;
+}
+
+export default function TenderPage(): JSX.Element {
+  const [tenderId, setTenderId] = useState<string | null>(null);
+  const [session, setSession] = useState<TenderSessionResponse | null>(null);
+  const [uploadLimits, setUploadLimits] = useState<UploadLimits | null>(null);
+  const [localFiles, setLocalFiles] = useState<LocalFile[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [parsingRequested, setParsingRequested] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const refreshSession = useCallback(async () => {
+    if (!tenderId) return null;
+    try {
+      const data = await getTenderStatus(tenderId);
+      setSession(data);
+      return data;
+    } catch (error) {
+      setErrorMessage((error as Error).message);
+      return null;
+    }
+  }, [tenderId]);
+
+  useEffect(() => {
+    let isMounted = true;
+    (async () => {
+      try {
+        const created = await createTenderSession();
+        if (!isMounted) return;
+        setTenderId(created.tenderId);
+        setUploadLimits(created.uploadLimits);
+        const initial = await getTenderStatus(created.tenderId);
+        if (!isMounted) return;
+        setSession(initial);
+      } catch (error) {
+        if (!isMounted) return;
+        setErrorMessage((error as Error).message);
+      }
+    })();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const startParsing = useCallback(async () => {
+    if (!tenderId) return;
+    try {
+      setIsProcessing(true);
+      const updated = await triggerParsing(tenderId);
+      setSession(updated);
+    } catch (error) {
+      setParsingRequested(false);
+      setErrorMessage((error as Error).message);
+    } finally {
+      setIsProcessing(false);
+    }
+  }, [tenderId]);
+
+  const requestParsing = useCallback(() => {
+    setParsingRequested(true);
+    void startParsing().catch(() => {
+      setParsingRequested(false);
+    });
+  }, [startParsing]);
+
+  useEffect(() => {
+    if (!tenderId || !session) return;
+
+    if (session.status === 'parsing' || session.status === 'uploading') {
+      const interval = setInterval(() => {
+        void refreshSession();
+      }, 5000);
+      return () => clearInterval(interval);
+    }
+
+    if (session.status === 'uploaded' && !parsingRequested && !isProcessing) {
+      requestParsing();
+    }
+  }, [isProcessing, parsingRequested, refreshSession, requestParsing, session, tenderId]);
+
+  const updateLocalFile = useCallback((id: string, partial: Partial<LocalFile>) => {
+    setLocalFiles((prev) => prev.map((item) => (item.id === id ? { ...item, ...partial } : item)));
+  }, []);
+
+  const handleUpload = useCallback(
+    async (files: File[]) => {
+      if (!tenderId || !uploadLimits) {
+        setErrorMessage('Upload session not ready yet. Please wait and try again.');
+        return;
+      }
+      if (!files.length) return;
+
+      setIsUploading(true);
+      setErrorMessage(null);
+
+      for (const file of files) {
+        const id = crypto.randomUUID();
+        const allowedTypes =
+          uploadLimits?.allowedMimeTypes?.length
+            ? uploadLimits.allowedMimeTypes
+            : ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+        const maxSizeBytes = uploadLimits?.maxFileSizeBytes ?? 5 * 1024 * 1024;
+        const isSizeValid = file.size <= maxSizeBytes;
+        const isTypeValid = allowedTypes.includes(file.type);
+
+        if (!isSizeValid || !isTypeValid) {
+          setLocalFiles((prev) => [
+            ...prev,
+            {
+              id,
+              file,
+              status: 'failed',
+              progress: 0,
+              error: !isSizeValid ? 'File exceeds 5 MB limit.' : 'Unsupported file type.',
+            },
+          ]);
+          continue;
+        }
+
+        setLocalFiles((prev) => [
+          ...prev,
+          {
+            id,
+            file,
+            status: 'uploading',
+            progress: 0,
+          },
+        ]);
+
+        let initResponse: UploadInitResponse | null = null;
+        try {
+          initResponse = await initFileUpload(tenderId, {
+            filename: file.name,
+            sizeBytes: file.size,
+            contentType: file.type || 'application/octet-stream',
+          });
+
+          await uploadFileToSignedUrl(initResponse, file, (percent) => {
+            updateLocalFile(id, { progress: percent });
+          });
+
+          const remoteRecord = await completeFileUpload(tenderId, initResponse.fileId, { status: 'uploaded' });
+          updateLocalFile(id, { status: 'uploaded', progress: 100, remote: remoteRecord });
+        } catch (error) {
+          const message = (error as Error).message;
+          updateLocalFile(id, { status: 'failed', progress: 0, error: message });
+          if (initResponse) {
+            try {
+              await completeFileUpload(tenderId, initResponse.fileId, { status: 'failed', error: message });
+            } catch {
+              // ignore follow-up failure
+            }
+          }
+          setErrorMessage(message);
+        } finally {
+          await refreshSession();
+        }
+      }
+
+      setIsUploading(false);
+    },
+    [refreshSession, tenderId, updateLocalFile, uploadLimits],
+  );
+
+  const handleFileInput = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const files = event.target.files;
+      if (files) {
+        void handleUpload(Array.from(files));
+        event.target.value = '';
+      }
+    },
+    [handleUpload],
+  );
+
+  const handleDrop = useCallback(
+    (event: React.DragEvent<HTMLLabelElement>) => {
+      event.preventDefault();
+      setIsDragging(false);
+      const files = Array.from(event.dataTransfer.files ?? []);
+      void handleUpload(files);
+    },
+    [handleUpload],
+  );
+
+  const handleDragOver = useCallback((event: React.DragEvent<HTMLLabelElement>) => {
+    event.preventDefault();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((event: React.DragEvent<HTMLLabelElement>) => {
+    event.preventDefault();
+    setIsDragging(false);
+  }, []);
+
+  const parseInfo = useMemo<ParseMetadata | null>(() => session?.parse ?? null, [session]);
+  const isReadyForValidation = session?.status === 'parsed';
+
   return (
-    <main className='mx-auto flex min-h-screen max-w-3xl flex-col gap-6 px-4 py-16'>
+    <main className='mx-auto flex min-h-screen max-w-4xl flex-col gap-6 px-4 py-16'>
       <header className='space-y-2'>
         <h1 className='text-3xl font-semibold tracking-tight'>New Tender Intake</h1>
         <p className='text-muted-foreground'>
-          Drop in the tender documents (RFP, BOQ, annexures) and plug this page into your preferred ingestion pipeline.
+          Upload tender packs and kick off automated parsing. Once completed, jump to the validation workspace for review.
         </p>
       </header>
 
-      <section className='rounded-lg border border-dashed border-border p-8 text-center text-muted-foreground'>
-        <p>Upload widget goes here when you connect to your backend.</p>
-        <p className='mt-2 text-xs'>For now this is a placeholder so you can wire up your own form or drag-and-drop flow.</p>
+      {errorMessage ? (
+        <div className='rounded border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive'>{errorMessage}</div>
+      ) : null}
+
+      <section className='grid gap-4 rounded-xl border border-dashed border-border bg-muted/50 p-6 text-center'>
+        <label
+          htmlFor='tender-upload'
+          onDragOver={handleDragOver}
+          onDragLeave={handleDragLeave}
+          onDrop={handleDrop}
+          className={`flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-muted-foreground/40 px-6 py-10 transition ${
+            isDragging ? 'border-primary bg-primary/10 text-primary' : 'hover:border-primary/70 hover:bg-muted'
+          }`}
+        >
+          <div className='space-y-2'>
+            <p className='text-lg font-medium'>Drag &amp; drop files here</p>
+            <p className='text-sm text-muted-foreground'>PDF or DOCX - up to 5 MB each</p>
+          </div>
+          <span className='mt-4 rounded bg-primary px-4 py-2 text-sm font-medium text-primary-foreground'>Browse files</span>
+          <input
+            ref={fileInputRef}
+            id='tender-upload'
+            type='file'
+            multiple
+            accept='.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            className='sr-only'
+            onChange={handleFileInput}
+          />
+        </label>
+        <p className='text-xs text-muted-foreground'>
+          Files are streamed directly to secure Cloud Storage. Once everything lands, we automatically fire the Document AI pipeline.
+        </p>
+      </section>
+
+      <section className='space-y-3'>
+        <header className='flex items-center justify-between'>
+          <h2 className='text-lg font-semibold'>Uploads</h2>
+          {tenderId ? <span className='text-xs text-muted-foreground'>Tender ID: {tenderId}</span> : null}
+        </header>
+        <div className='space-y-2 rounded-lg border bg-card p-4 text-sm'>
+          {localFiles.length === 0 ? (
+            <p className='text-muted-foreground'>No files uploaded yet.</p>
+          ) : (
+            <ul className='space-y-2'>
+              {localFiles.map((item) => (
+                <li key={item.id} className='rounded border border-border/60 bg-background p-3'>
+                  <div className='flex flex-wrap items-center justify-between gap-2'>
+                    <div className='space-y-1'>
+                      <p className='font-medium'>{item.file.name}</p>
+                      <p className='text-xs text-muted-foreground'>
+                        {(item.file.size / 1024 / 1024).toFixed(2)} MB - {item.file.type || 'unknown type'}
+                      </p>
+                    </div>
+                    <div className='text-right text-xs uppercase tracking-wide text-muted-foreground'>
+                      {item.status === 'uploading' && <span className='text-primary'>Uploading {item.progress}%</span>}
+                      {item.status === 'uploaded' && <span className='text-emerald-600'>Uploaded</span>}
+                      {item.status === 'failed' && <span className='text-destructive'>Failed</span>}
+                    </div>
+                  </div>
+                  <div className='mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted'>
+                    <div
+                      className={`h-full transition-all ${item.status === 'failed' ? 'bg-destructive' : 'bg-primary'}`}
+                      style={{ width: `${item.status === 'uploaded' ? 100 : item.progress}%` }}
+                    />
+                  </div>
+                  {item.error ? <p className='mt-2 text-xs text-destructive'>{item.error}</p> : null}
+                </li>
+              ))}
+            </ul>
+          )}
+          {isUploading ? <p className='text-xs text-muted-foreground'>Uploading files...</p> : null}
+        </div>
+      </section>
+
+      <section className='space-y-3'>
+        <header className='flex items-center justify-between'>
+          <h2 className='text-lg font-semibold'>Processing status</h2>
+          <span className='text-xs uppercase tracking-wide text-primary'>{session?.status ?? 'loading...'}</span>
+        </header>
+        <div className='space-y-2 rounded-lg border bg-card p-4 text-sm text-muted-foreground'>
+          <p>
+            {session?.status === 'parsing'
+              ? 'Document AI parsing in progress. This may take a minute for large tenders.'
+              : session?.status === 'parsed'
+                ? 'Parsing complete! Head over to the validation workspace to review extracted data.'
+                : session?.status === 'failed'
+                  ? `Parsing failed. ${parseInfo?.error ?? 'Try re-running the process once issues are resolved.'}`
+                  : 'Waiting for uploads to finish. Parsing will start automatically when all files are uploaded.'}
+          </p>
+
+          {session?.status === 'uploaded' && !parsingRequested ? (
+            <button
+              type='button'
+              onClick={requestParsing}
+              className='mt-1 inline-flex items-center justify-center rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-60'
+              disabled={isProcessing}
+            >
+              {isProcessing ? 'Starting...' : 'Start parsing now'}
+            </button>
+          ) : null}
+
+          {session?.status === 'failed' ? (
+            <button
+              type='button'
+              onClick={requestParsing}
+              className='inline-flex items-center justify-center rounded-md border border-destructive px-3 py-2 text-xs font-medium text-destructive transition hover:bg-destructive/10 disabled:opacity-60'
+              disabled={isProcessing}
+            >
+              Retry parsing
+            </button>
+          ) : null}
+
+          {parseInfo?.outputUri ? (
+            <p className='text-xs'>
+              Output stored at{' '}
+              <span className='font-medium text-foreground'>{parseInfo.outputUri}</span>. You can inspect the JSON in Cloud Storage.
+            </p>
+          ) : null}
+        </div>
       </section>
 
       <section className='space-y-2 text-sm text-muted-foreground'>
-        <p>Suggested next steps:</p>
+        <p>Next steps:</p>
         <ul className='list-disc space-y-1 pl-5'>
-          <li>Send files to an ingestion API or Cloud Storage bucket.</li>
-          <li>Trigger AI extraction/analysis jobs.</li>
-          <li>Redirect to the validation page once processing completes.</li>
+          <li>
+            Monitor the validation queue on the{' '}
+            <a className='text-primary underline' href='/valid'>
+              validation workspace
+            </a>
+            .
+          </li>
+          <li>Ensure extracted artefacts look correct before the submission deadline.</li>
         </ul>
       </section>
+
+      <footer className='border-t pt-4 text-xs text-muted-foreground'>
+        <p>
+          Upload policy: up to{' '}
+          {(uploadLimits?.allowedMimeTypes && uploadLimits.allowedMimeTypes.length > 0
+            ? uploadLimits.allowedMimeTypes.join(', ')
+            : 'application/pdf, application/vnd.openxmlformats-officedocument.wordprocessingml.document')}{' '}
+          - max{' '}
+          {uploadLimits?.maxFileSizeBytes
+            ? (uploadLimits.maxFileSizeBytes / 1024 / 1024).toFixed(2)
+            : '5.00'}{' '}
+          MB per file
+        </p>
+        {isReadyForValidation ? (
+          <p className='mt-2'>
+            Parsing complete. Review the extracted data on the{' '}
+            <a className='text-primary underline' href={`/valid?tenderId=${tenderId ?? ''}`}>
+              validation page
+            </a>
+            .
+          </p>
+        ) : null}
+      </footer>
     </main>
   );
 }
-
