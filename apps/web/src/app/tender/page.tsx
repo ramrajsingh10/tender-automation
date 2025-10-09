@@ -26,7 +26,7 @@ interface LocalFile {
   remote?: FileRecord;
 }
 
-export default function TenderPage(): JSX.Element {
+export default function TenderPage() {
   const [tenderId, setTenderId] = useState<string | null>(null);
   const [session, setSession] = useState<TenderSessionResponse | null>(null);
   const [uploadLimits, setUploadLimits] = useState<UploadLimits | null>(null);
