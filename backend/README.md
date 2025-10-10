@@ -6,7 +6,8 @@ Python FastAPI service that powers the tender upload pipeline. It exposes APIs f
 - Requesting signed upload URLs for raw documents.
 - Recording upload completion status to drive downstream parsing.
 
-> **Note:** Data is held in an in-memory store for the MVP. Replace with Firestore/SQL before production use.
+> **Note:** By default the service uses Firestore to persist tender sessions in production. Set `STORE_BACKEND=memory` if you need
+> an in-memory store for quick local experiments.
 
 ---
 
@@ -33,6 +34,8 @@ Set these before starting the server (values shown are defaults used if nothing 
 | `DOCUMENT_AI_PROCESSOR_ID` | Processor used in Phase 2 | _(empty)_ |
 | `SIGNED_URL_EXPIRATION_SECONDS` | Validity period for upload URLs | `900` (15 min) |
 | `API_ALLOWED_ORIGINS` | Comma separated list of CORS origins | `*` |
+| `STORE_BACKEND` | `firestore` (default) or `memory` | `memory` |
+| `FIRESTORE_COLLECTION` | Firestore collection that stores tender sessions | `tenderSessions` |
 
 Example (PowerShell):
 
@@ -43,6 +46,8 @@ $env:PARSED_TENDER_BUCKET = "parsedtenderdata"
 $env:DOCUMENT_AI_LOCATION = "us"
 $env:DOCUMENT_AI_PROCESSOR_ID = "your-processor-id"
 $env:API_ALLOWED_ORIGINS = "http://localhost:3000"
+$env:STORE_BACKEND = "firestore"
+$env:FIRESTORE_COLLECTION = "tenderSessions"
 ```
 
 ### 3. Install dependencies
@@ -122,7 +127,6 @@ Payload examples are available via the Swagger UI.
 
 ### 7. Next steps
 
-- Swap in persistent storage (e.g. Firestore) for tender sessions and files.
 - Wire the Document AI trigger (Part 2) to call the processor once status hits `UPLOADED`.
 - Harden auth (JWT / Firebase Auth) and observability (structured logging).
 

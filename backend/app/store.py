@@ -6,7 +6,7 @@ from typing import Dict, Optional
 from uuid import UUID, uuid4
 
 from . import schemas
-from .settings import upload_settings
+from .settings import store_settings, upload_settings
 
 
 class TenderStore:
@@ -127,4 +127,9 @@ class TenderStore:
             return session.model_copy(deep=True)
 
 
-store = TenderStore()
+if store_settings.backend == "firestore":
+    from .store_firestore import FirestoreTenderStore
+
+    store = FirestoreTenderStore(store_settings.firestore_collection)
+else:
+    store = TenderStore()

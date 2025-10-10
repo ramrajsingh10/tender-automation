@@ -37,7 +37,14 @@ class APISettings:
     ) or ("*",)
 
 
+@dataclass(frozen=True)
+class StoreSettings:
+    backend: str = os.environ.get("STORE_BACKEND", "memory").lower()
+    firestore_collection: str = os.environ.get("FIRESTORE_COLLECTION", "tenderSessions")
+
+
 upload_settings = UploadSettings()
 storage_settings = StorageSettings()
 document_ai_settings = DocumentAISettings()
 api_settings = APISettings()
+store_settings = StoreSettings()
