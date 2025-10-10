@@ -1,6 +1,6 @@
 {
   "hosting": {
-    "source": "apps/web",
+    "source": "frontend",
     "frameworksBackend": {
       "region": "us-central1"
     }

@@ -3,9 +3,9 @@
 # dependencies
 /node_modules
 /node_modules.old
-/apps/web/node_modules
+/frontend/node_modules
 /apps/api/node_modules
-/apps/web/node_modules.old
+/frontend/node_modules.old
 /.pnp
 .pnp.*
 .yarn/*
@@ -48,7 +48,7 @@ yarn-error.log*
 .env.test
 .env.example
 !**/.env.example
-apps/web/.env.example
+frontend/.env.example
 backend/cloudrun.env
 
 # vercel

@@ -3,13 +3,13 @@
   "version": "0.1.0",
   "private": true,
   "workspaces": [
-    "apps/*"
+    "frontend"
   ],
   "scripts": {
-    "web:dev": "npm run dev --workspace web",
-    "web:build": "npm run build --workspace web",
-    "web:start": "npm run start --workspace web",
-    "web:lint": "npm run lint --workspace web",
+    "frontend:dev": "npm run dev --workspace frontend",
+    "frontend:build": "npm run build --workspace frontend",
+    "frontend:start": "npm run start --workspace frontend",
+    "frontend:lint": "npm run lint --workspace frontend",
     "lint": "npm run lint --workspaces"
   }
 }

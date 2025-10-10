@@ -2,10 +2,10 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "npm: web dev",
+      "label": "npm: frontend dev",
       "type": "shell",
       "command": "npm",
-      "args": ["run", "web:dev"],
+      "args": ["run", "frontend:dev"],
       "options": {
         "cwd": ""
       },

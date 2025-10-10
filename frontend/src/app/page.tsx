@@ -30,7 +30,7 @@ export default function Home() {
           This UI is intentionally lightweight; connect it to your own APIs or workflows to power the tender lifecycle.
         </p>
         <p>
-          Need a different page? Add it under <code className="rounded bg-muted px-1 py-0.5 text-xs">apps/web/src/app</code>
+          Need a different page? Add it under <code className="rounded bg-muted px-1 py-0.5 text-xs">frontend/src/app</code>
           and link it here.
         </p>
       </section>
