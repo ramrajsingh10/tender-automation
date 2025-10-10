@@ -32,10 +32,20 @@ def init_upload(tender_id: UUID, request: schemas.UploadInitRequest) -> schemas.
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     if request.size_bytes > upload_settings.max_file_size_bytes:
-        raise HTTPException(status_code=400, detail="File exceeds the 5 MB upload limit.")
+        max_mb = upload_settings.max_file_size_bytes / (1024 * 1024)
+        raise HTTPException(
+            status_code=413,
+            detail=f"File exceeds the {max_mb:.2f} MB upload limit.",
+        )
 
     if request.content_type not in upload_settings.allowed_mime_types:
         raise HTTPException(status_code=400, detail="File type is not permitted for upload.")
+
+    if upload_settings.max_files is not None and len(session.files) >= upload_settings.max_files:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Maximum of {upload_settings.max_files} files reached for this tender.",
+        )
 
     file_id = uuid4()
     sanitized_name = _sanitize_filename(request.filename)
@@ -63,7 +73,10 @@ def init_upload(tender_id: UUID, request: schemas.UploadInitRequest) -> schemas.
         storage_uri=storage_uri,
         status="uploading",
     )
-    store.add_or_update_file(tender_id, record)
+    try:
+        store.add_or_update_file(tender_id, record)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     return schemas.UploadInitResponse(
         file_id=file_id,

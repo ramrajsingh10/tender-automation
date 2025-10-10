@@ -31,23 +31,25 @@ class TenderStore:
         )
         with self._lock:
             self._sessions[tender_id] = session
-        return session
+            return session.model_copy(deep=True)
 
     def get_session(self, tender_id: UUID) -> schemas.TenderSession:
-        try:
-            return self._sessions[tender_id]
-        except KeyError as exc:
-            raise KeyError(f"Tender session {tender_id} not found") from exc
+        with self._lock:
+            try:
+                session = self._sessions[tender_id]
+            except KeyError as exc:
+                raise KeyError(f"Tender session {tender_id} not found") from exc
+            return session.model_copy(deep=True)
 
     def list_sessions(self) -> list[schemas.TenderSession]:
         with self._lock:
-            return list(self._sessions.values())
+            return [session.model_copy(deep=True) for session in self._sessions.values()]
 
     def set_status(self, tender_id: UUID, status: schemas.TenderStatus) -> schemas.TenderSession:
         with self._lock:
             session = self._sessions[tender_id]
             session.status = status
-        return session
+            return session.model_copy(deep=True)
 
     def add_or_update_file(self, tender_id: UUID, record: schemas.FileRecord) -> schemas.TenderSession:
         with self._lock:
@@ -74,7 +76,7 @@ class TenderStore:
                 schemas.TenderStatus.FAILED,
             ):
                 session.status = schemas.TenderStatus.UPLOADING
-        return session
+            return session.model_copy(deep=True)
 
     def mark_parsing_started(
         self,
@@ -95,7 +97,7 @@ class TenderStore:
             session.parse.completed_at = None
             session.parse.last_checked_at = now
             session.parse.error = None
-        return session
+            return session.model_copy(deep=True)
 
     def mark_parsing_checked(self, tender_id: UUID) -> None:
         with self._lock:
@@ -112,7 +114,7 @@ class TenderStore:
             if output_uri:
                 session.parse.output_uri = output_uri
             session.parse.error = None
-        return session
+            return session.model_copy(deep=True)
 
     def mark_parsing_failed(self, tender_id: UUID, error_message: str) -> schemas.TenderSession:
         with self._lock:
@@ -122,7 +124,7 @@ class TenderStore:
             session.parse.completed_at = now
             session.parse.last_checked_at = now
             session.parse.error = error_message
-        return session
+            return session.model_copy(deep=True)
 
 
 store = TenderStore()

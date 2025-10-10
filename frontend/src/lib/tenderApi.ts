@@ -59,11 +59,18 @@ export interface UploadCompletionRequest {
 }
 
 function getBaseUrl(): string {
-  const url = process.env.NEXT_PUBLIC_TENDER_BACKEND_URL ?? '';
-  if (!url) {
-    throw new Error('NEXT_PUBLIC_TENDER_BACKEND_URL is not configured');
+  const candidates: Array<string | undefined> = [
+    process.env.NEXT_PUBLIC_TENDER_BACKEND_URL,
+    process.env.NEXT_PUBLIC_API_URL,
+    typeof window !== 'undefined' ? window.location.origin : undefined,
+  ];
+  const resolved = candidates.find((value) => typeof value === 'string' && value.trim().length > 0);
+  if (!resolved) {
+    throw new Error(
+      'Backend base URL is not configured. Set NEXT_PUBLIC_TENDER_BACKEND_URL or NEXT_PUBLIC_API_URL.',
+    );
   }
-  return url.replace(/\/+$/, '');
+  return resolved.replace(/\/+$/, '');
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {

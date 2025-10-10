@@ -15,6 +15,26 @@ import {
   UploadInitResponse,
 } from '@/lib/tenderApi';
 
+const DEFAULT_ALLOWED_TYPES = [
+  'application/pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+] as const;
+const DEFAULT_ACCEPT_EXTENSIONS = ['.pdf', '.docx'] as const;
+const MIME_LABELS: Record<string, string> = {
+  'application/pdf': 'PDF',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'DOCX',
+};
+
+const formatFileSize = (bytes: number): string => {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  }
+  if (bytes >= 1024) {
+    return `${Math.round(bytes / 1024)} KB`;
+  }
+  return `${bytes} bytes`;
+};
+
 type LocalFileStatus = 'pending' | 'uploading' | 'uploaded' | 'failed';
 
 interface LocalFile {
@@ -36,7 +56,27 @@ export default function TenderPage() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
+  const [isSessionLoading, setIsSessionLoading] = useState(true);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const allowedMimeTypes = useMemo(() => {
+    if (uploadLimits?.allowedMimeTypes && uploadLimits.allowedMimeTypes.length > 0) {
+      return uploadLimits.allowedMimeTypes;
+    }
+    return [...DEFAULT_ALLOWED_TYPES];
+  }, [uploadLimits?.allowedMimeTypes]);
+
+  const maxSizeBytes = uploadLimits?.maxFileSizeBytes ?? 5 * 1024 * 1024;
+  const maxSizeLabel = formatFileSize(maxSizeBytes);
+  const allowedTypeLabel = useMemo(() => {
+    const labels = allowedMimeTypes.map((type) => MIME_LABELS[type] ?? type);
+    return labels.join(', ');
+  }, [allowedMimeTypes]);
+  const acceptAttribute = useMemo(() => {
+    const deduped = new Set<string>([...DEFAULT_ACCEPT_EXTENSIONS, ...allowedMimeTypes]);
+    return Array.from(deduped).join(',');
+  }, [allowedMimeTypes]);
+  const isSessionReady = Boolean(tenderId && uploadLimits && !isSessionLoading);
 
   const refreshSession = useCallback(async () => {
     if (!tenderId) return null;
@@ -52,6 +92,7 @@ export default function TenderPage() {
 
   useEffect(() => {
     let isMounted = true;
+    setIsSessionLoading(true);
     (async () => {
       try {
         const created = await createTenderSession();
@@ -64,6 +105,10 @@ export default function TenderPage() {
       } catch (error) {
         if (!isMounted) return;
         setErrorMessage((error as Error).message);
+      } finally {
+        if (isMounted) {
+          setIsSessionLoading(false);
+        }
       }
     })();
     return () => {
@@ -124,13 +169,8 @@ export default function TenderPage() {
 
       for (const file of files) {
         const id = crypto.randomUUID();
-        const allowedTypes =
-          uploadLimits?.allowedMimeTypes?.length
-            ? uploadLimits.allowedMimeTypes
-            : ['application/pdf', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
-        const maxSizeBytes = uploadLimits?.maxFileSizeBytes ?? 5 * 1024 * 1024;
         const isSizeValid = file.size <= maxSizeBytes;
-        const isTypeValid = allowedTypes.includes(file.type);
+        const isTypeValid = allowedMimeTypes.includes(file.type);
 
         if (!isSizeValid || !isTypeValid) {
           setLocalFiles((prev) => [
@@ -140,7 +180,9 @@ export default function TenderPage() {
               file,
               status: 'failed',
               progress: 0,
-              error: !isSizeValid ? 'File exceeds 5 MB limit.' : 'Unsupported file type.',
+              error: !isSizeValid
+                ? `File exceeds the ${maxSizeLabel} limit.`
+                : `Unsupported file type. Allowed: ${allowedTypeLabel}.`,
             },
           ]);
           continue;
@@ -188,28 +230,42 @@ export default function TenderPage() {
 
       setIsUploading(false);
     },
-    [refreshSession, tenderId, updateLocalFile, uploadLimits],
+    [
+      allowedMimeTypes,
+      allowedTypeLabel,
+      maxSizeBytes,
+      maxSizeLabel,
+      refreshSession,
+      tenderId,
+      updateLocalFile,
+      uploadLimits,
+    ],
   );
 
   const handleFileInput = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
+      if (!isSessionReady) {
+        event.preventDefault();
+        return;
+      }
       const files = event.target.files;
       if (files) {
         void handleUpload(Array.from(files));
         event.target.value = '';
       }
     },
-    [handleUpload],
+    [handleUpload, isSessionReady],
   );
 
   const handleDrop = useCallback(
     (event: React.DragEvent<HTMLLabelElement>) => {
       event.preventDefault();
+      if (!isSessionReady) return;
       setIsDragging(false);
       const files = Array.from(event.dataTransfer.files ?? []);
       void handleUpload(files);
     },
-    [handleUpload],
+    [handleUpload, isSessionReady],
   );
 
   const handleDragOver = useCallback((event: React.DragEvent<HTMLLabelElement>) => {
@@ -241,24 +297,51 @@ export default function TenderPage() {
       <section className='grid gap-4 rounded-xl border border-dashed border-border bg-muted/50 p-6 text-center'>
         <label
           htmlFor='tender-upload'
+          aria-disabled={!isSessionReady}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
           className={`flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-muted-foreground/40 px-6 py-10 transition ${
-            isDragging ? 'border-primary bg-primary/10 text-primary' : 'hover:border-primary/70 hover:bg-muted'
+            !isSessionReady
+              ? 'cursor-not-allowed opacity-60'
+              : isDragging
+                ? 'border-primary bg-primary/10 text-primary'
+                : 'hover:border-primary/70 hover:bg-muted'
           }`}
+          onClick={(event) => {
+            if (!isSessionReady) {
+              event.preventDefault();
+              event.stopPropagation();
+            }
+          }}
         >
           <div className='space-y-2'>
             <p className='text-lg font-medium'>Drag &amp; drop files here</p>
-            <p className='text-sm text-muted-foreground'>PDF or DOCX - up to 5 MB each</p>
+            <p className='text-sm text-muted-foreground'>
+              {allowedTypeLabel} - up to {maxSizeLabel} each
+            </p>
           </div>
-          <span className='mt-4 rounded bg-primary px-4 py-2 text-sm font-medium text-primary-foreground'>Browse files</span>
+          <button
+            type='button'
+            className='mt-4 rounded bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-60'
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (!isSessionReady) {
+                return;
+              }
+              fileInputRef.current?.click();
+            }}
+            disabled={!isSessionReady}
+          >
+            {isSessionReady ? 'Browse files' : 'Preparing upload...'}
+          </button>
           <input
             ref={fileInputRef}
             id='tender-upload'
             type='file'
             multiple
-            accept='.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+            accept={acceptAttribute}
             className='sr-only'
             onChange={handleFileInput}
           />
@@ -370,17 +453,7 @@ export default function TenderPage() {
       </section>
 
       <footer className='border-t pt-4 text-xs text-muted-foreground'>
-        <p>
-          Upload policy: up to{' '}
-          {(uploadLimits?.allowedMimeTypes && uploadLimits.allowedMimeTypes.length > 0
-            ? uploadLimits.allowedMimeTypes.join(', ')
-            : 'application/pdf, application/vnd.openxmlformats-officedocument.wordprocessingml.document')}{' '}
-          - max{' '}
-          {uploadLimits?.maxFileSizeBytes
-            ? (uploadLimits.maxFileSizeBytes / 1024 / 1024).toFixed(2)
-            : '5.00'}{' '}
-          MB per file
-        </p>
+        <p>Upload policy: {allowedTypeLabel} — max {maxSizeLabel} per file</p>
         {isReadyForValidation ? (
           <p className='mt-2'>
             Parsing complete. Review the extracted data on the{' '}
