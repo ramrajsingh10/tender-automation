@@ -48,6 +48,7 @@ yarn-error.log*
 .env.test
 .env.example
 !**/.env.example
+!frontend/.env.production
 frontend/.env.example
 backend/cloudrun.env
 
@@ -60,5 +61,4 @@ next-env.d.ts
 **/next-env.d.ts
 
 
-.env.example/
 .env.example
