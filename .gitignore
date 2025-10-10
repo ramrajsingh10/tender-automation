@@ -60,5 +60,5 @@ next-env.d.ts
 **/next-env.d.ts
 
 
-env.example/
+.env.example/
 .env.example
