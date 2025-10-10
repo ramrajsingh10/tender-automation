@@ -45,10 +45,11 @@ yarn-error.log*
 .env.local
 .env.development
 .env.production
+!frontend/.env.production
 .env.test
 .env.example
+.env.example/
 !**/.env.example
-!frontend/.env.production
 frontend/.env.example
 backend/cloudrun.env
 
@@ -61,4 +62,5 @@ next-env.d.ts
 **/next-env.d.ts
 
 
-.env.example
+
+
