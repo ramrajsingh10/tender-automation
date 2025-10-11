@@ -81,12 +81,7 @@ class DocumentAIService:
             "inputDocuments": {"gcsPrefix": {"gcsUriPrefix": input_prefix}},
             "documentOutputConfig": {"gcsOutputConfig": {"gcsUri": output_prefix}},
         }
-        response = session.post(
-            endpoint,
-            headers={"X-Goog-User-Project": self.project_id},
-            json=payload,
-            timeout=60,
-        )
+        response = session.post(endpoint, json=payload, timeout=60)
         self._raise_for_error(response, "starting Document AI batch process")
         data = response.json()
         operation_name = data.get("name")
@@ -107,11 +102,7 @@ class DocumentAIService:
         elapsed = 0
 
         while True:
-            response = session.get(
-                endpoint,
-                headers={"X-Goog-User-Project": self.project_id},
-                timeout=60,
-            )
+            response = session.get(endpoint, timeout=60)
             self._raise_for_error(response, "polling Document AI operation status")
             data = response.json()
             if progress_callback:
