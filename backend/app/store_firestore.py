@@ -19,7 +19,7 @@ class FirestoreTenderStore:
 
     @staticmethod
     def _serialize(session: schemas.TenderSession) -> dict:
-        return session.model_dump(by_alias=True, mode="python")
+        return session.model_dump(by_alias=True, mode="json")
 
     @staticmethod
     def _deserialize(data: dict | None) -> schemas.TenderSession:
