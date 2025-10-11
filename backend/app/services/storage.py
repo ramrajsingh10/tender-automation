@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from google.api_core import exceptions as gcs_exceptions
+from google.cloud import exceptions as gcs_exceptions
 from google.auth import exceptions as auth_exceptions
 from google.cloud import storage
 
