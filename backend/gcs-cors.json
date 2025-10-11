@@ -1,0 +1,11 @@
+[
+  {
+    "origin": [
+      "https://tender-automation--tender-automation-1008.us-central1.hosted.app",
+      "http://localhost:3000"
+    ],
+    "method": ["PUT", "GET", "OPTIONS"],
+    "responseHeader": ["Content-Type", "Authorization", "x-goog-meta-*"],
+    "maxAgeSeconds": 3600
+  }
+]
