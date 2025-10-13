@@ -1,6 +1,6 @@
-'use client';
+"use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   completeFileUpload,
   createTenderSession,
@@ -13,16 +13,17 @@ import {
   uploadFileToSignedUrl,
   UploadLimits,
   UploadInitResponse,
-} from '@/lib/tenderApi';
+} from "../../lib/tenderApi";
 
 const DEFAULT_ALLOWED_TYPES = [
-  'application/pdf',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  "application/pdf",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
 ] as const;
-const DEFAULT_ACCEPT_EXTENSIONS = ['.pdf', '.docx'] as const;
+const DEFAULT_ACCEPT_EXTENSIONS = [".pdf", ".docx"] as const;
 const MIME_LABELS: Record<string, string> = {
-  'application/pdf': 'PDF',
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'DOCX',
+  "application/pdf": "PDF",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+    "DOCX",
 };
 
 const formatFileSize = (bytes: number): string => {
@@ -35,7 +36,7 @@ const formatFileSize = (bytes: number): string => {
   return `${bytes} bytes`;
 };
 
-type LocalFileStatus = 'pending' | 'uploading' | 'uploaded' | 'failed';
+type LocalFileStatus = "pending" | "uploading" | "uploaded" | "failed";
 
 interface LocalFile {
   id: string;
@@ -60,7 +61,10 @@ export default function TenderPage() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const allowedMimeTypes = useMemo(() => {
-    if (uploadLimits?.allowedMimeTypes && uploadLimits.allowedMimeTypes.length > 0) {
+    if (
+      uploadLimits?.allowedMimeTypes &&
+      uploadLimits.allowedMimeTypes.length > 0
+    ) {
       return uploadLimits.allowedMimeTypes;
     }
     return [...DEFAULT_ALLOWED_TYPES];
@@ -70,11 +74,14 @@ export default function TenderPage() {
   const maxSizeLabel = formatFileSize(maxSizeBytes);
   const allowedTypeLabel = useMemo(() => {
     const labels = allowedMimeTypes.map((type) => MIME_LABELS[type] ?? type);
-    return labels.join(', ');
+    return labels.join(", ");
   }, [allowedMimeTypes]);
   const acceptAttribute = useMemo(() => {
-    const deduped = new Set<string>([...DEFAULT_ACCEPT_EXTENSIONS, ...allowedMimeTypes]);
-    return Array.from(deduped).join(',');
+    const deduped = new Set<string>([
+      ...DEFAULT_ACCEPT_EXTENSIONS,
+      ...allowedMimeTypes,
+    ]);
+    return Array.from(deduped).join(",");
   }, [allowedMimeTypes]);
   const isSessionReady = Boolean(tenderId && uploadLimits && !isSessionLoading);
 
@@ -140,26 +147,40 @@ export default function TenderPage() {
   useEffect(() => {
     if (!tenderId || !session) return;
 
-    if (session.status === 'parsing' || session.status === 'uploading') {
+    if (session.status === "parsing" || session.status === "uploading") {
       const interval = setInterval(() => {
         void refreshSession();
       }, 5000);
       return () => clearInterval(interval);
     }
 
-    if (session.status === 'uploaded' && !parsingRequested && !isProcessing) {
+    if (session.status === "uploaded" && !parsingRequested && !isProcessing) {
       requestParsing();
     }
-  }, [isProcessing, parsingRequested, refreshSession, requestParsing, session, tenderId]);
+  }, [
+    isProcessing,
+    parsingRequested,
+    refreshSession,
+    requestParsing,
+    session,
+    tenderId,
+  ]);
 
-  const updateLocalFile = useCallback((id: string, partial: Partial<LocalFile>) => {
-    setLocalFiles((prev) => prev.map((item) => (item.id === id ? { ...item, ...partial } : item)));
-  }, []);
+  const updateLocalFile = useCallback(
+    (id: string, partial: Partial<LocalFile>) => {
+      setLocalFiles((prev) =>
+        prev.map((item) => (item.id === id ? { ...item, ...partial } : item)),
+      );
+    },
+    [],
+  );
 
   const handleUpload = useCallback(
     async (files: File[]) => {
       if (!tenderId || !uploadLimits) {
-        setErrorMessage('Upload session not ready yet. Please wait and try again.');
+        setErrorMessage(
+          "Upload session not ready yet. Please wait and try again.",
+        );
         return;
       }
       if (!files.length) return;
@@ -178,7 +199,7 @@ export default function TenderPage() {
             {
               id,
               file,
-              status: 'failed',
+              status: "failed",
               progress: 0,
               error: !isSizeValid
                 ? `File exceeds the ${maxSizeLabel} limit.`
@@ -193,7 +214,7 @@ export default function TenderPage() {
           {
             id,
             file,
-            status: 'uploading',
+            status: "uploading",
             progress: 0,
           },
         ]);
@@ -203,21 +224,36 @@ export default function TenderPage() {
           initResponse = await initFileUpload(tenderId, {
             filename: file.name,
             sizeBytes: file.size,
-            contentType: file.type || 'application/octet-stream',
+            contentType: file.type || "application/octet-stream",
           });
 
           await uploadFileToSignedUrl(initResponse, file, (percent) => {
             updateLocalFile(id, { progress: percent });
           });
 
-          const remoteRecord = await completeFileUpload(tenderId, initResponse.fileId, { status: 'uploaded' });
-          updateLocalFile(id, { status: 'uploaded', progress: 100, remote: remoteRecord });
+          const remoteRecord = await completeFileUpload(
+            tenderId,
+            initResponse.fileId,
+            { status: "uploaded" },
+          );
+          updateLocalFile(id, {
+            status: "uploaded",
+            progress: 100,
+            remote: remoteRecord,
+          });
         } catch (error) {
           const message = (error as Error).message;
-          updateLocalFile(id, { status: 'failed', progress: 0, error: message });
+          updateLocalFile(id, {
+            status: "failed",
+            progress: 0,
+            error: message,
+          });
           if (initResponse) {
             try {
-              await completeFileUpload(tenderId, initResponse.fileId, { status: 'failed', error: message });
+              await completeFileUpload(tenderId, initResponse.fileId, {
+                status: "failed",
+                error: message,
+              });
             } catch {
               // ignore follow-up failure
             }
@@ -251,7 +287,7 @@ export default function TenderPage() {
       const files = event.target.files;
       if (files) {
         void handleUpload(Array.from(files));
-        event.target.value = '';
+        event.target.value = "";
       }
     },
     [handleUpload, isSessionReady],
@@ -268,45 +304,59 @@ export default function TenderPage() {
     [handleUpload, isSessionReady],
   );
 
-  const handleDragOver = useCallback((event: React.DragEvent<HTMLLabelElement>) => {
-    event.preventDefault();
-    setIsDragging(true);
-  }, []);
+  const handleDragOver = useCallback(
+    (event: React.DragEvent<HTMLLabelElement>) => {
+      event.preventDefault();
+      setIsDragging(true);
+    },
+    [],
+  );
 
-  const handleDragLeave = useCallback((event: React.DragEvent<HTMLLabelElement>) => {
-    event.preventDefault();
-    setIsDragging(false);
-  }, []);
+  const handleDragLeave = useCallback(
+    (event: React.DragEvent<HTMLLabelElement>) => {
+      event.preventDefault();
+      setIsDragging(false);
+    },
+    [],
+  );
 
-  const parseInfo = useMemo<ParseMetadata | null>(() => session?.parse ?? null, [session]);
-  const isReadyForValidation = session?.status === 'parsed';
+  const parseInfo = useMemo<ParseMetadata | null>(
+    () => session?.parse ?? null,
+    [session],
+  );
+  const isReadyForValidation = session?.status === "parsed";
 
   return (
-    <main className='mx-auto flex min-h-screen max-w-4xl flex-col gap-6 px-4 py-16'>
-      <header className='space-y-2'>
-        <h1 className='text-3xl font-semibold tracking-tight'>New Tender Intake</h1>
-        <p className='text-muted-foreground'>
-          Upload tender packs and kick off automated parsing. Once completed, jump to the validation workspace for review.
+    <main className="mx-auto flex min-h-screen max-w-4xl flex-col gap-6 px-4 py-16">
+      <header className="space-y-2">
+        <h1 className="text-3xl font-semibold tracking-tight">
+          New Tender Intake
+        </h1>
+        <p className="text-muted-foreground">
+          Upload tender packs and kick off automated parsing. Once completed,
+          jump to the validation workspace for review.
         </p>
       </header>
 
       {errorMessage ? (
-        <div className='rounded border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive'>{errorMessage}</div>
+        <div className="rounded border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+          {errorMessage}
+        </div>
       ) : null}
 
-      <section className='grid gap-4 rounded-xl border border-dashed border-border bg-muted/50 p-6 text-center'>
+      <section className="grid gap-4 rounded-xl border border-dashed border-border bg-muted/50 p-6 text-center">
         <label
-          htmlFor='tender-upload'
+          htmlFor="tender-upload"
           aria-disabled={!isSessionReady}
           onDragOver={handleDragOver}
           onDragLeave={handleDragLeave}
           onDrop={handleDrop}
           className={`flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-muted-foreground/40 px-6 py-10 transition ${
             !isSessionReady
-              ? 'cursor-not-allowed opacity-60'
+              ? "cursor-not-allowed opacity-60"
               : isDragging
-                ? 'border-primary bg-primary/10 text-primary'
-                : 'hover:border-primary/70 hover:bg-muted'
+                ? "border-primary bg-primary/10 text-primary"
+                : "hover:border-primary/70 hover:bg-muted"
           }`}
           onClick={(event) => {
             if (!isSessionReady) {
@@ -315,15 +365,15 @@ export default function TenderPage() {
             }
           }}
         >
-          <div className='space-y-2'>
-            <p className='text-lg font-medium'>Drag &amp; drop files here</p>
-            <p className='text-sm text-muted-foreground'>
+          <div className="space-y-2">
+            <p className="text-lg font-medium">Drag &amp; drop files here</p>
+            <p className="text-sm text-muted-foreground">
               {allowedTypeLabel} - up to {maxSizeLabel} each
             </p>
           </div>
           <button
-            type='button'
-            className='mt-4 rounded bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-60'
+            type="button"
+            className="mt-4 rounded bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-60"
             onClick={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -334,95 +384,122 @@ export default function TenderPage() {
             }}
             disabled={!isSessionReady}
           >
-            {isSessionReady ? 'Browse files' : 'Preparing upload...'}
+            {isSessionReady ? "Browse files" : "Preparing upload..."}
           </button>
           <input
             ref={fileInputRef}
-            id='tender-upload'
-            type='file'
+            id="tender-upload"
+            type="file"
             multiple
             accept={acceptAttribute}
-            className='sr-only'
+            className="sr-only"
             onChange={handleFileInput}
           />
         </label>
-        <p className='text-xs text-muted-foreground'>
-          Files are streamed directly to secure Cloud Storage. Once everything lands, we automatically fire the Document AI pipeline.
+        <p className="text-xs text-muted-foreground">
+          Files are streamed directly to secure Cloud Storage. Once everything
+          lands, we automatically fire the Document AI pipeline.
         </p>
       </section>
 
-      <section className='space-y-3'>
-        <header className='flex items-center justify-between'>
-          <h2 className='text-lg font-semibold'>Uploads</h2>
-          {tenderId ? <span className='text-xs text-muted-foreground'>Tender ID: {tenderId}</span> : null}
+      <section className="space-y-3">
+        <header className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Uploads</h2>
+          {tenderId ? (
+            <span className="text-xs text-muted-foreground">
+              Tender ID: {tenderId}
+            </span>
+          ) : null}
         </header>
-        <div className='space-y-2 rounded-lg border bg-card p-4 text-sm'>
+        <div className="space-y-2 rounded-lg border bg-card p-4 text-sm">
           {localFiles.length === 0 ? (
-            <p className='text-muted-foreground'>No files uploaded yet.</p>
+            <p className="text-muted-foreground">No files uploaded yet.</p>
           ) : (
-            <ul className='space-y-2'>
+            <ul className="space-y-2">
               {localFiles.map((item) => (
-                <li key={item.id} className='rounded border border-border/60 bg-background p-3'>
-                  <div className='flex flex-wrap items-center justify-between gap-2'>
-                    <div className='space-y-1'>
-                      <p className='font-medium'>{item.file.name}</p>
-                      <p className='text-xs text-muted-foreground'>
-                        {(item.file.size / 1024 / 1024).toFixed(2)} MB - {item.file.type || 'unknown type'}
+                <li
+                  key={item.id}
+                  className="rounded border border-border/60 bg-background p-3"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="space-y-1">
+                      <p className="font-medium">{item.file.name}</p>
+                      <p className="text-xs text-muted-foreground">
+                        {(item.file.size / 1024 / 1024).toFixed(2)} MB -{" "}
+                        {item.file.type || "unknown type"}
                       </p>
                     </div>
-                    <div className='text-right text-xs uppercase tracking-wide text-muted-foreground'>
-                      {item.status === 'uploading' && <span className='text-primary'>Uploading {item.progress}%</span>}
-                      {item.status === 'uploaded' && <span className='text-emerald-600'>Uploaded</span>}
-                      {item.status === 'failed' && <span className='text-destructive'>Failed</span>}
+                    <div className="text-right text-xs uppercase tracking-wide text-muted-foreground">
+                      {item.status === "uploading" && (
+                        <span className="text-primary">
+                          Uploading {item.progress}%
+                        </span>
+                      )}
+                      {item.status === "uploaded" && (
+                        <span className="text-emerald-600">Uploaded</span>
+                      )}
+                      {item.status === "failed" && (
+                        <span className="text-destructive">Failed</span>
+                      )}
                     </div>
                   </div>
-                  <div className='mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted'>
+                  <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
                     <div
-                      className={`h-full transition-all ${item.status === 'failed' ? 'bg-destructive' : 'bg-primary'}`}
-                      style={{ width: `${item.status === 'uploaded' ? 100 : item.progress}%` }}
+                      className={`h-full transition-all ${item.status === "failed" ? "bg-destructive" : "bg-primary"}`}
+                      style={{
+                        width: `${item.status === "uploaded" ? 100 : item.progress}%`,
+                      }}
                     />
                   </div>
-                  {item.error ? <p className='mt-2 text-xs text-destructive'>{item.error}</p> : null}
+                  {item.error ? (
+                    <p className="mt-2 text-xs text-destructive">
+                      {item.error}
+                    </p>
+                  ) : null}
                 </li>
               ))}
             </ul>
           )}
-          {isUploading ? <p className='text-xs text-muted-foreground'>Uploading files...</p> : null}
+          {isUploading ? (
+            <p className="text-xs text-muted-foreground">Uploading files...</p>
+          ) : null}
         </div>
       </section>
 
-      <section className='space-y-3'>
-        <header className='flex items-center justify-between'>
-          <h2 className='text-lg font-semibold'>Processing status</h2>
-          <span className='text-xs uppercase tracking-wide text-primary'>{session?.status ?? 'loading...'}</span>
+      <section className="space-y-3">
+        <header className="flex items-center justify-between">
+          <h2 className="text-lg font-semibold">Processing status</h2>
+          <span className="text-xs uppercase tracking-wide text-primary">
+            {session?.status ?? "loading..."}
+          </span>
         </header>
-        <div className='space-y-2 rounded-lg border bg-card p-4 text-sm text-muted-foreground'>
+        <div className="space-y-2 rounded-lg border bg-card p-4 text-sm text-muted-foreground">
           <p>
-            {session?.status === 'parsing'
-              ? 'Document AI parsing in progress. This may take a minute for large tenders.'
-              : session?.status === 'parsed'
-                ? 'Parsing complete! Head over to the validation workspace to review extracted data.'
-                : session?.status === 'failed'
-                  ? `Parsing failed. ${parseInfo?.error ?? 'Try re-running the process once issues are resolved.'}`
-                  : 'Waiting for uploads to finish. Parsing will start automatically when all files are uploaded.'}
+            {session?.status === "parsing"
+              ? "Document AI parsing in progress. This may take a minute for large tenders."
+              : session?.status === "parsed"
+                ? "Parsing complete! Head over to the validation workspace to review extracted data."
+                : session?.status === "failed"
+                  ? `Parsing failed. ${parseInfo?.error ?? "Try re-running the process once issues are resolved."}`
+                  : "Waiting for uploads to finish. Parsing will start automatically when all files are uploaded."}
           </p>
 
-          {session?.status === 'uploaded' && !parsingRequested ? (
+          {session?.status === "uploaded" && !parsingRequested ? (
             <button
-              type='button'
+              type="button"
               onClick={requestParsing}
-              className='mt-1 inline-flex items-center justify-center rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-60'
+              className="mt-1 inline-flex items-center justify-center rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-60"
               disabled={isProcessing}
             >
-              {isProcessing ? 'Starting...' : 'Start parsing now'}
+              {isProcessing ? "Starting..." : "Start parsing now"}
             </button>
           ) : null}
 
-          {session?.status === 'failed' ? (
+          {session?.status === "failed" ? (
             <button
-              type='button'
+              type="button"
               onClick={requestParsing}
-              className='inline-flex items-center justify-center rounded-md border border-destructive px-3 py-2 text-xs font-medium text-destructive transition hover:bg-destructive/10 disabled:opacity-60'
+              className="inline-flex items-center justify-center rounded-md border border-destructive px-3 py-2 text-xs font-medium text-destructive transition hover:bg-destructive/10 disabled:opacity-60"
               disabled={isProcessing}
             >
               Retry parsing
@@ -430,34 +507,45 @@ export default function TenderPage() {
           ) : null}
 
           {parseInfo?.outputUri ? (
-            <p className='text-xs'>
-              Output stored at{' '}
-              <span className='font-medium text-foreground'>{parseInfo.outputUri}</span>. You can inspect the JSON in Cloud Storage.
+            <p className="text-xs">
+              Output stored at{" "}
+              <span className="font-medium text-foreground">
+                {parseInfo.outputUri}
+              </span>
+              . You can inspect the JSON in Cloud Storage.
             </p>
           ) : null}
         </div>
       </section>
 
-      <section className='space-y-2 text-sm text-muted-foreground'>
+      <section className="space-y-2 text-sm text-muted-foreground">
         <p>Next steps:</p>
-        <ul className='list-disc space-y-1 pl-5'>
+        <ul className="list-disc space-y-1 pl-5">
           <li>
-            Monitor the validation queue on the{' '}
-            <a className='text-primary underline' href='/valid'>
+            Monitor the validation queue on the{" "}
+            <a className="text-primary underline" href="/valid">
               validation workspace
             </a>
             .
           </li>
-          <li>Ensure extracted artefacts look correct before the submission deadline.</li>
+          <li>
+            Ensure extracted artefacts look correct before the submission
+            deadline.
+          </li>
         </ul>
       </section>
 
-      <footer className='border-t pt-4 text-xs text-muted-foreground'>
-        <p>Upload policy: {allowedTypeLabel} — max {maxSizeLabel} per file</p>
+      <footer className="border-t pt-4 text-xs text-muted-foreground">
+        <p>
+          Upload policy: {allowedTypeLabel} — max {maxSizeLabel} per file
+        </p>
         {isReadyForValidation ? (
-          <p className='mt-2'>
-            Parsing complete. Review the extracted data on the{' '}
-            <a className='text-primary underline' href={`/valid?tenderId=${tenderId ?? ''}`}>
+          <p className="mt-2">
+            Parsing complete. Review the extracted data on the{" "}
+            <a
+              className="text-primary underline"
+              href={`/valid?tenderId=${tenderId ?? ""}`}
+            >
               validation page
             </a>
             .
