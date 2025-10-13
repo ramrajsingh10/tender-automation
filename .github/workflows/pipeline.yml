@@ -1,0 +1,20 @@
+name: pipeline-services-ci
+
+on:
+  push:
+    paths:
+      - 'services/**'
+      - '.github/workflows/pipeline.yml'
+  pull_request:
+    paths:
+      - 'services/**'
+      - '.github/workflows/pipeline.yml'
+
+jobs:
+  placeholder:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pipeline scaffolding placeholder
+        run: |
+          echo "Pipeline CI scaffolding - replace with real lint/test commands."

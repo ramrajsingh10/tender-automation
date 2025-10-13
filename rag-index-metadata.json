@@ -1,0 +1,15 @@
+﻿{
+    "config":  {
+                   "dimensions":  1536,
+                   "approximateNeighborsCount":  150,
+                   "distanceMeasureType":  "COSINE_DISTANCE",
+                   "featureNormType":  "UNIT_L2_NORM",
+                   "algorithmConfig":  {
+                                           "treeAhConfig":  {
+                                                                "leafNodeEmbeddingCount":  1000,
+                                                                "leafNodesToSearchPercent":  7
+                                                            }
+                                       }
+               },
+    "contentsDeltaUri":  "gs://tender-automation-1008-matching-engine/rag-index-delta/"
+}

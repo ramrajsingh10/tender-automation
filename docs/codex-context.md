@@ -7,8 +7,7 @@
 ## Repository Overview
 - `frontend/` - Next.js 15 application deployed to Firebase Hosting.
 - `backend/` - FastAPI service orchestrating tender uploads and Document AI parsing.
-- `services/api-public` - FastAPI health endpoint published on Cloud Run.
-- `services/api-private` - FastAPI service for authenticated integrations.
+- `services/` - Cloud Run services (ingest_api, orchestrator, extractors, artifact-builder, rag-indexer, qa_loop).
 - `agents/` - Workspace for background automation (currently a placeholder).
 - `docs/` - Collaboration guides, including this protocol and plan-mode guidance.
 
@@ -30,16 +29,11 @@
   - `npm run frontend:lint`
   - `npm run frontend:build`
   - `npm run frontend:start`
-- Cloud Run deploy (see `.vscode/tasks.json` for canned commands):
-  - Public: `gcloud run deploy api-public --source ./services/api-public --region us-central1 --allow-unauthenticated`
-  - Private: `gcloud run deploy api-private --source ./services/api-private --region us-central1 --no-allow-unauthenticated`
+- Cloud Run deploy (see `.vscode/tasks.json` for canned commands targeting each service).
 - Python service smoke tests (virtual environment recommended):
   ```powershell
-  python -m pip install -r services/api-public/requirements.txt pytest
-  pytest services/api-public
-
-  python -m pip install -r services/api-private/requirements.txt pytest
-  pytest services/api-private
+  python -m pip install -r services/<service-name>/requirements.txt pytest
+  pytest services/<service-name>
   ```
 
 ## Collaboration Workflow

@@ -1,0 +1,7 @@
+fastapi==0.115.0
+uvicorn==0.30.1
+google-cloud-storage==2.18.2
+google-cloud-firestore==2.16.0
+google-api-python-client==2.152.0
+google-auth-httplib2==0.2.0
+pikepdf==9.2.0

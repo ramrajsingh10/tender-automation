@@ -1,0 +1,134 @@
+version: "3.9"
+
+x-python-service: &python-service
+  image: python:3.11-slim
+  working_dir: /app
+  environment:
+    PYTHONUNBUFFERED: "1"
+  volumes:
+    - ./:/workspace
+  command: >
+    bash -c "pip install --no-cache-dir -r requirements.txt
+    && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+
+services:
+  ingest-api:
+    <<: *python-service
+    container_name: ingest-api
+    working_dir: /workspace/services/ingest_api
+    env_file:
+      - config/docker-services.env.example
+    ports:
+      - "8001:8000"
+    command: >
+      bash -c "pip install --no-cache-dir -r requirements.txt
+      && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+
+  orchestrator:
+    <<: *python-service
+    container_name: orchestrator
+    working_dir: /workspace/services/orchestrator
+    env_file:
+      - config/docker-services.env.example
+    ports:
+      - "8080:8000"
+    depends_on:
+      - extractor-deadlines
+      - extractor-emd
+      - extractor-requirements
+      - extractor-penalties
+      - extractor-annexures
+      - artifact-annexures
+      - rag-indexer
+      - qa-loop
+    command: >
+      bash -c "pip install --no-cache-dir -r requirements.txt
+      && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+
+  extractor-deadlines:
+    <<: *python-service
+    container_name: extractor-deadlines
+    working_dir: /workspace/services/extractors/deadlines
+    env_file:
+      - config/docker-services.env.example
+    ports:
+      - "8101:8000"
+    command: >
+      bash -c "pip install --no-cache-dir -r /workspace/services/extractors/requirements.txt
+      && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+
+  extractor-emd:
+    <<: *python-service
+    container_name: extractor-emd
+    working_dir: /workspace/services/extractors/emd
+    env_file:
+      - config/docker-services.env.example
+    ports:
+      - "8102:8000"
+    command: >
+      bash -c "pip install --no-cache-dir -r /workspace/services/extractors/requirements.txt
+      && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+
+  extractor-requirements:
+    <<: *python-service
+    container_name: extractor-requirements
+    working_dir: /workspace/services/extractors/requirements
+    env_file:
+      - config/docker-services.env.example
+    ports:
+      - "8103:8000"
+    command: >
+      bash -c "pip install --no-cache-dir -r /workspace/services/extractors/requirements.txt
+      && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+
+  extractor-penalties:
+    <<: *python-service
+    container_name: extractor-penalties
+    working_dir: /workspace/services/extractors/penalties
+    env_file:
+      - config/docker-services.env.example
+    ports:
+      - "8104:8000"
+    command: >
+      bash -c "pip install --no-cache-dir -r /workspace/services/extractors/requirements.txt
+      && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+
+  extractor-annexures:
+    <<: *python-service
+    container_name: extractor-annexures
+    working_dir: /workspace/services/extractors/annexures
+    env_file:
+      - config/docker-services.env.example
+    ports:
+      - "8105:8000"
+    command: >
+      bash -c "pip install --no-cache-dir -r /workspace/services/extractors/requirements.txt
+      && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+
+  artifact-annexures:
+    <<: *python-service
+    container_name: artifact-annexures
+    working_dir: /workspace/services/artifact-builder
+    env_file:
+      - config/docker-services.env.example
+    ports:
+      - "8106:8000"
+
+  rag-indexer:
+    <<: *python-service
+    container_name: rag-indexer
+    working_dir: /workspace/services/rag-indexer
+    env_file:
+      - config/docker-services.env.example
+    ports:
+      - "8107:8000"
+
+  qa-loop:
+    <<: *python-service
+    container_name: qa-loop
+    working_dir: /workspace/services/qa_loop
+    ports:
+      - "8190:8000"
+    command: >
+      bash -c "pip install --no-cache-dir -r requirements.txt
+      && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"

@@ -20,6 +20,7 @@ Python FastAPI service that powers the tender upload pipeline. It exposes APIs f
 3. Cloud resources already provisioned:
    - Buckets: `rawtenderdata`, `parsedtenderdata`.
    - Document AI processor(s) (used later in Phase 2).
+4. Dedicated service account configured as described in [`docs/service-accounts.md`](../docs/service-accounts.md).
 
 ### 2. Environment variables
 
@@ -157,7 +158,8 @@ docker run --rm -p 8080:8080 `
   tender-backend
 ```
 
-Deploy to Cloud Run:
+Deploy to Cloud Run (ensure `sa-backend@tender-automation-1008.iam.gserviceaccount.com`
+exists as documented in `docs/service-accounts.md`):
 
 ```powershell
 gcloud run deploy tender-backend `
@@ -165,6 +167,7 @@ gcloud run deploy tender-backend `
   --platform managed `
   --region $env:DOCUMENT_AI_LOCATION `
   --allow-unauthenticated `
+  --service-account sa-backend@tender-automation-1008.iam.gserviceaccount.com `
   --set-env-vars GCP_PROJECT_ID=$env:GCP_PROJECT_ID,RAW_TENDER_BUCKET=$env:RAW_TENDER_BUCKET,PARSED_TENDER_BUCKET=$env:PARSED_TENDER_BUCKET,DOCUMENT_AI_LOCATION=$env:DOCUMENT_AI_LOCATION,DOCUMENT_AI_PROCESSOR_ID=$env:DOCUMENT_AI_PROCESSOR_ID,SIGNED_URL_EXPIRATION_SECONDS=900,API_ALLOWED_ORIGINS=https://tender-automation--tender-automation-1008.us-central1.hosted.app
 ```
 
@@ -174,5 +177,5 @@ Attach the service account that has Storage + Document AI roles if needed:
 gcloud run services update tender-backend `
   --platform managed `
   --region $env:DOCUMENT_AI_LOCATION `
-  --service-account document-ai-runner@tender-automation-1008.iam.gserviceaccount.com
+  --service-account sa-backend@tender-automation-1008.iam.gserviceaccount.com
 ```
