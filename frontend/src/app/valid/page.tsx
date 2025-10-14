@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 
 interface TextAnchor {
   page?: number | string;
@@ -88,6 +88,8 @@ export default function ValidationPage() {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isMutating, setIsMutating] = useState<string | null>(null);
+  const [tenderId, setTenderId] = useState<string | null>(null);
+  const [isClientReady, setIsClientReady] = useState(false);
 
   const refreshData = async (id: string) => {
     const [factRes, annexureRes] = await Promise.all([
@@ -100,9 +102,13 @@ export default function ValidationPage() {
     setAnnexures(annexureRes.items);
   };
 
-  const tenderId = useMemo(() => {
-    if (typeof window === "undefined") return null;
-    return getTenderIdFromSearch(new URLSearchParams(window.location.search));
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+    const params = new URLSearchParams(window.location.search);
+    setTenderId(getTenderIdFromSearch(params));
+    setIsClientReady(true);
   }, []);
 
   useEffect(() => {
@@ -172,7 +178,11 @@ export default function ValidationPage() {
           Review the results the AI produced for a tender before you publish
           them to the dashboard.
         </p>
-        {!tenderId ? (
+        {!isClientReady ? (
+          <p className="text-sm text-muted-foreground">
+            Loading tender context…
+          </p>
+        ) : !tenderId ? (
           <p className="text-sm text-destructive">
             Provide a tenderId query parameter to load data.
           </p>
