@@ -1,6 +1,7 @@
 ﻿"use client";
 
 import { useEffect, useState } from "react";
+import { getTenderStatus, TenderSessionResponse } from "../../lib/tenderApi";
 
 interface TextAnchor {
   page?: number | string;
@@ -42,6 +43,41 @@ function getTenderIdFromSearch(searchParams: URLSearchParams): string | null {
 }
 
 let cachedBackendBaseUrl: string | null = null;
+
+type StepState = "pending" | "active" | "completed" | "failed";
+
+function StatusStep({
+  label,
+  description,
+  state,
+}: {
+  label: string;
+  description: string;
+  state: StepState;
+}) {
+  const dotClass =
+    state === "completed"
+      ? "bg-primary"
+      : state === "failed"
+        ? "bg-destructive"
+        : "bg-muted";
+
+  return (
+    <div className="flex items-start gap-3">
+      <div className="mt-1 h-3 w-3">
+        {state === "active" ? (
+          <span className="block h-3 w-3 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        ) : (
+          <span className={`block h-3 w-3 rounded-full ${dotClass}`} />
+        )}
+      </div>
+      <div className="space-y-1">
+        <p className="font-medium text-foreground">{label}</p>
+        <p className="text-xs text-muted-foreground">{description}</p>
+      </div>
+    </div>
+  );
+}
 
 function getBackendBaseUrl(): string {
   if (cachedBackendBaseUrl) {
@@ -90,6 +126,9 @@ export default function ValidationPage() {
   const [isMutating, setIsMutating] = useState<string | null>(null);
   const [tenderId, setTenderId] = useState<string | null>(null);
   const [isClientReady, setIsClientReady] = useState(false);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [tenderStatus, setTenderStatus] =
+    useState<TenderSessionResponse | null>(null);
 
   const refreshData = async (id: string) => {
     const [factRes, annexureRes] = await Promise.all([
@@ -124,6 +163,39 @@ export default function ValidationPage() {
         setIsLoading(false);
       }
     })();
+  }, [tenderId]);
+
+  useEffect(() => {
+    if (!tenderId) return;
+
+    let isMounted = true;
+    let interval: ReturnType<typeof setInterval> | undefined;
+
+    const fetchStatus = async () => {
+      try {
+        const status = await getTenderStatus(tenderId);
+        if (!isMounted) return;
+        setTenderStatus(status);
+        setStatusError(null);
+        if (["parsed", "failed"].includes(status.status) && interval) {
+          clearInterval(interval);
+          interval = undefined;
+        }
+      } catch (err) {
+        if (!isMounted) return;
+        setStatusError((err as Error).message);
+      }
+    };
+
+    void fetchStatus();
+    interval = setInterval(fetchStatus, 8000);
+
+    return () => {
+      isMounted = false;
+      if (interval) {
+        clearInterval(interval);
+      }
+    };
   }, [tenderId]);
 
   const decideFact = async (
@@ -188,6 +260,57 @@ export default function ValidationPage() {
           </p>
         ) : null}
       </header>
+
+      <section className="space-y-3 rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">
+        <StatusStep
+          label="Uploads received"
+          description="Tender documents have been uploaded to storage."
+          state={
+            tenderStatus?.status && tenderStatus.status !== "uploading"
+              ? "completed"
+              : "active"
+          }
+        />
+        <StatusStep
+          label="Document AI parsing"
+          description={
+            tenderStatus?.status === "failed"
+              ? "Parsing failed. Review the tender in the intake page to retry."
+              : "Extracting structured data from your tender pack."
+          }
+          state={
+            tenderStatus?.status === "failed"
+              ? "failed"
+              : tenderStatus?.status === "parsed"
+                ? "completed"
+                : tenderStatus?.status === "uploading" || !tenderStatus
+                  ? "pending"
+                  : "active"
+          }
+        />
+        <StatusStep
+          label="Extraction results"
+          description={
+            facts.length || annexures.length
+              ? "Facts and annexures are ready for review."
+              : tenderStatus?.status === "parsed"
+                ? "Waiting for extractor output… refresh shortly."
+                : "Results will appear once parsing completes."
+          }
+          state={
+            tenderStatus?.status === "failed"
+              ? "failed"
+              : facts.length || annexures.length
+                ? "completed"
+                : tenderStatus?.status === "parsed"
+                  ? "active"
+                  : "pending"
+          }
+        />
+        {statusError ? (
+          <p className="text-xs text-destructive">{statusError}</p>
+        ) : null}
+      </section>
 
       {error ? (
         <div className="rounded border border-destructive/60 bg-destructive/10 px-4 py-3 text-sm text-destructive">

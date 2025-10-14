@@ -47,6 +47,41 @@ interface LocalFile {
   remote?: FileRecord;
 }
 
+type StepState = "pending" | "active" | "completed" | "failed";
+
+function StatusStep({
+  label,
+  description,
+  state,
+}: {
+  label: string;
+  description: string;
+  state: StepState;
+}) {
+  const dotClass =
+    state === "completed"
+      ? "bg-primary"
+      : state === "failed"
+        ? "bg-destructive"
+        : "bg-muted";
+
+  return (
+    <div className="flex items-start gap-3">
+      <div className="mt-1 h-3 w-3">
+        {state === "active" ? (
+          <span className="block h-3 w-3 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        ) : (
+          <span className={`block h-3 w-3 rounded-full ${dotClass}`} />
+        )}
+      </div>
+      <div className="space-y-1">
+        <p className="font-medium text-foreground">{label}</p>
+        <p className="text-xs text-muted-foreground">{description}</p>
+      </div>
+    </div>
+  );
+}
+
 export default function TenderPage() {
   const [tenderId, setTenderId] = useState<string | null>(null);
   const [session, setSession] = useState<TenderSessionResponse | null>(null);
@@ -326,6 +361,14 @@ export default function TenderPage() {
   );
   const isReadyForValidation = session?.status === "parsed";
 
+  const statusState =
+    session?.status ?? (isSessionLoading ? "uploading" : "uploading");
+
+  const uploadDescription =
+    statusState === "uploading"
+      ? "Documents are being streamed to secure storage."
+      : "Documents are stored securely.";
+
   return (
     <main className="mx-auto flex min-h-screen max-w-4xl flex-col gap-6 px-4 py-16">
       <header className="space-y-2">
@@ -473,13 +516,52 @@ export default function TenderPage() {
             {session?.status ?? "loading..."}
           </span>
         </header>
-        <div className="space-y-2 rounded-lg border bg-card p-4 text-sm text-muted-foreground">
+        <div className="space-y-4 rounded-lg border bg-card p-4 text-sm text-muted-foreground">
+          <div className="space-y-3">
+            <StatusStep
+              label="Upload files"
+              description={uploadDescription}
+              state={statusState === "uploading" ? "active" : "completed"}
+            />
+            <StatusStep
+              label="Document AI parsing"
+              description={
+                statusState === "failed"
+                  ? "Parsing failed. Review the error and retry."
+                  : "Extracting structured data from your tender pack."
+              }
+              state={
+                statusState === "uploading"
+                  ? "pending"
+                  : statusState === "uploaded"
+                    ? "active"
+                    : statusState === "parsing"
+                      ? "active"
+                      : statusState === "parsed"
+                        ? "completed"
+                        : statusState === "failed"
+                          ? "failed"
+                          : "pending"
+              }
+            />
+            <StatusStep
+              label="Ready for validation"
+              description="Switch to the validation workspace to review results."
+              state={
+                statusState === "parsed"
+                  ? "completed"
+                  : statusState === "failed"
+                    ? "failed"
+                    : "pending"
+              }
+            />
+          </div>
           <p>
-            {session?.status === "parsing"
+            {statusState === "parsing"
               ? "Document AI parsing in progress. This may take a minute for large tenders."
-              : session?.status === "parsed"
+              : statusState === "parsed"
                 ? "Parsing complete! Head over to the validation workspace to review extracted data."
-                : session?.status === "failed"
+                : statusState === "failed"
                   ? `Parsing failed. ${parseInfo?.error ?? "Try re-running the process once issues are resolved."}`
                   : "Waiting for uploads to finish. Parsing will start automatically when all files are uploaded."}
           </p>
