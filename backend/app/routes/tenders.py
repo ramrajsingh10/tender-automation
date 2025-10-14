@@ -21,7 +21,9 @@ def _build_upload_limits() -> schemas.UploadLimits:
 
 
 @router.post("/", response_model=schemas.CreateTenderResponse, status_code=201)
-def create_tender_session(request: schemas.CreateTenderRequest | None = None) -> schemas.CreateTenderResponse:
+def create_tender_session(
+    request: schemas.CreateTenderRequest | None = None,
+) -> schemas.CreateTenderResponse:
     payload = request or schemas.CreateTenderRequest()
     session = store.create_session(created_by=payload.created_by)
     return schemas.CreateTenderResponse(
@@ -48,18 +50,27 @@ def get_tender_session(tender_id: UUID) -> schemas.TenderStatusResponse:
 
 
 @router.post("/{tender_id}/process", response_model=schemas.TenderStatusResponse)
-def trigger_parsing(tender_id: UUID, background_tasks: BackgroundTasks) -> schemas.TenderStatusResponse:
+def trigger_parsing(
+    tender_id: UUID, background_tasks: BackgroundTasks
+) -> schemas.TenderStatusResponse:
     try:
         session = store.get_session(tender_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     if not session.files:
-        raise HTTPException(status_code=400, detail="No files uploaded for this tender.")
+        raise HTTPException(
+            status_code=400, detail="No files uploaded for this tender."
+        )
     if any(file.status != "uploaded" for file in session.files):
-        raise HTTPException(status_code=409, detail="All files must be uploaded before parsing can begin.")
+        raise HTTPException(
+            status_code=409,
+            detail="All files must be uploaded before parsing can begin.",
+        )
     if session.status == schemas.TenderStatus.PARSING:
-        raise HTTPException(status_code=409, detail="Parsing is already in progress for this tender.")
+        raise HTTPException(
+            status_code=409, detail="Parsing is already in progress for this tender."
+        )
     if not document_ai_service.is_configured:
         raise HTTPException(
             status_code=500,
@@ -70,7 +81,7 @@ def trigger_parsing(tender_id: UUID, background_tasks: BackgroundTasks) -> schem
         )
 
     input_prefix = f"gs://{storage_settings.raw_bucket}/{tender_id}/"
-    output_prefix = f"gs://{storage_settings.parsed_bucket}/{tender_id}/"
+    output_prefix = f"gs://{storage_settings.parsed_bucket}/{tender_id}/docai/output/"
 
     try:
         operation_name = document_ai_service.start_batch_process(
@@ -86,7 +97,9 @@ def trigger_parsing(tender_id: UUID, background_tasks: BackgroundTasks) -> schem
         input_prefix=input_prefix,
         output_prefix=output_prefix,
     )
-    background_tasks.add_task(_monitor_operation, tender_id, operation_name, output_prefix)
+    background_tasks.add_task(
+        _monitor_operation, tender_id, operation_name, output_prefix
+    )
 
     updated = store.get_session(tender_id)
     return schemas.TenderStatusResponse(
@@ -98,7 +111,9 @@ def trigger_parsing(tender_id: UUID, background_tasks: BackgroundTasks) -> schem
     )
 
 
-def _monitor_operation(tender_id: UUID, operation_name: str, output_prefix: str) -> None:
+def _monitor_operation(
+    tender_id: UUID, operation_name: str, output_prefix: str
+) -> None:
     try:
         result = document_ai_service.wait_for_operation(
             operation_name,
