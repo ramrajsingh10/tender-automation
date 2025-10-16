@@ -13,7 +13,7 @@ export default function Home() {
         </p>
       </section>
 
-      <nav className="flex flex-col gap-4 sm:flex-row">
+      <nav className="flex flex-col flex-wrap gap-4 sm:flex-row">
         <Link href="/tender" className={ctaClasses}>
           Start a New Tender
         </Link>
@@ -22,6 +22,12 @@ export default function Home() {
         </Link>
         <Link href="/dashboard" className={ctaClasses}>
           View Dashboard
+        </Link>
+        <Link href="/tenderupload" className={ctaClasses}>
+          Upload Document
+        </Link>
+        <Link href="/visualize" className={ctaClasses}>
+          Visualize
         </Link>
       </nav>
 
