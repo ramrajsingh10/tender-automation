@@ -61,6 +61,11 @@ backend/cloudrun.env
 next-env.d.ts
 **/next-env.d.ts
 
-
+.firebase
+.firebase/*
+!.firebase/hosting.cache
+.firebase/hosting.*.cache
+.firebase/hosting.*.cache/*
+.firebase
 
 
