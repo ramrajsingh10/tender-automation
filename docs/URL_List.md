@@ -43,5 +43,5 @@ Default URL: https://tender-automation-lblqj4e2ba-uc.a.run.app
 Legacy URL: https://tender-automation-981270825391.us-central1.run.app
 
 Name: tender-backend
-Default URL: https://tender-backend-lblqj4e2ba-uc.a.run.app
-Legacy URL: https://tender-backend-981270825391.us-central1.run.app
+Default URL: https://tender-backend-981270825391.us-central1.run.app
+Legacy URL: https://tender-backend-lblqj4e2ba-uc.a.run.app

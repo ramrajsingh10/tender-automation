@@ -1,4 +1,8 @@
-# Pipeline Walkthrough
+# Pipeline Walkthrough (Legacy)
+
+> **Note:** We are migrating to an OCR + RAG pipeline described in
+> [`docs/NewApproach.md`](./NewApproach.md). This document captures the previous
+> extractor-based flow for reference.
 
 This guide explains how to exercise the end-to-end tender pipeline after an upload
 completes and Document AI emits output files. Adapt commands to match your
@@ -25,7 +29,7 @@ environment and service URLs.
 ## End-to-End Exercise
 
 1. **Upload tender package**
-   - Start the frontend: `npm run web:dev`.
+   - Start the frontend: `npm run frontend:dev`.
    - Navigate to `/tender`, upload the documents, and wait for the parsing status
      to change to *Parsed*.
 

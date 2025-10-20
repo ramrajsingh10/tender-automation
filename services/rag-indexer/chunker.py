@@ -22,6 +22,13 @@ def chunk_document(
     sections = document.get("sections", [])
     tables = document.get("tables", [])
 
+    if not sections and not tables and _pages_have_text(pages):
+        return [
+            chunk
+            for chunk in _chunk_pages_from_text(tender_id, pages, max_chars=max_chars)
+            if chunk.text.strip()
+        ]
+
     anchor_blocks = _build_anchor_block_lookup(pages)
     chunks: list[Chunk] = []
 
@@ -82,6 +89,56 @@ def chunk_document(
     )
 
     return [chunk for chunk in chunks if chunk.text.strip()]
+
+
+def _pages_have_text(pages: Iterable[dict[str, Any]]) -> bool:
+    for page in pages or []:
+        text = (page or {}).get("text")
+        if text and text.strip():
+            return True
+    return False
+
+
+def _chunk_pages_from_text(
+    tender_id: str,
+    pages: Iterable[dict[str, Any]],
+    *,
+    max_chars: int,
+) -> list[Chunk]:
+    chunks: list[Chunk] = []
+    fallback_page_number = 0
+
+    for page in pages or []:
+        fallback_page_number += 1
+        page_number = page.get("pageNumber") or fallback_page_number
+        text = (page.get("text") or "").strip()
+        if not text:
+            continue
+
+        # Split on blank lines to approximate paragraphs. If none, fall back to line splits.
+        paragraphs = [segment.strip() for segment in text.split("\n\n") if segment.strip()]
+        if not paragraphs:
+            paragraphs = [segment.strip() for segment in text.splitlines() if segment.strip()]
+        if not paragraphs:
+            paragraphs = [text]
+
+        metadata = {
+            "page": page_number,
+            "type": "ocr-page",
+            "detectedLanguages": page.get("detectedLanguages", []),
+            "dimension": page.get("dimension"),
+        }
+        chunks.extend(
+            _split_into_chunks(
+                tender_id,
+                f"page-{page_number}",
+                paragraphs,
+                max_chars=max_chars,
+                base_metadata=metadata,
+            )
+        )
+
+    return chunks
 
 
 def _build_anchor_block_lookup(pages: Iterable[dict[str, Any]]) -> dict[int, list[dict[str, Any]]]:

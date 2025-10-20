@@ -23,12 +23,6 @@ export default function Home() {
         <Link href="/dashboard" className={ctaClasses}>
           View Dashboard
         </Link>
-        <Link href="/tenderupload" className={ctaClasses}>
-          Upload Document
-        </Link>
-        <Link href="/visualize" className={ctaClasses}>
-          Visualize
-        </Link>
       </nav>
 
       <section className="space-y-3 text-sm text-muted-foreground">

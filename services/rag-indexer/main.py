@@ -23,6 +23,11 @@ class IndexRequest(BaseModel):
     chunkSize: int | None = Field(default=None, alias="chunkSize")
 
 
+class OCRIndexRequest(BaseModel):
+    tenderId: str = Field(..., alias="tenderId")
+    chunkSize: int | None = Field(default=None, alias="chunkSize")
+
+
 class IndexResponse(BaseModel):
     tenderId: str
     chunksIndexed: int
@@ -77,6 +82,34 @@ def create_app() -> FastAPI:
 
         if not chunks:
             logger.info("No chunks generated for tender %s", tender_id)
+            return IndexResponse(tenderId=tender_id, chunksIndexed=0)
+
+        _process_chunks(tender_id, chunks, embed_client, vector_client, firestore_client, max_batch)
+        return IndexResponse(tenderId=tender_id, chunksIndexed=len(chunks))
+
+    @app.post("/index/from-ocr", response_model=IndexResponse, status_code=status.HTTP_202_ACCEPTED)
+    def index_from_ocr(request: OCRIndexRequest) -> IndexResponse:
+        tender_id = request.tenderId
+        doc_snapshot = firestore_client.collection("ocrDocuments").document(tender_id).get()
+        if not doc_snapshot.exists:
+            raise HTTPException(status_code=404, detail=f"OCR document for tender {tender_id} not found")
+
+        ocr_document = doc_snapshot.to_dict() or {}
+        if "pages" not in ocr_document:
+            raise HTTPException(status_code=400, detail="OCR document missing pages array")
+
+        try:
+            chunks = chunk_document(
+                tender_id,
+                ocr_document,
+                max_chars=request.chunkSize or chunk_size,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.exception("Failed to chunk OCR document for tender %s", tender_id)
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+        if not chunks:
+            logger.info("No chunks generated from OCR for tender %s", tender_id)
             return IndexResponse(tenderId=tender_id, chunksIndexed=0)
 
         _process_chunks(tender_id, chunks, embed_client, vector_client, firestore_client, max_batch)

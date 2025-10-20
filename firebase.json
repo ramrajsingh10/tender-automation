@@ -1,8 +1,11 @@
 {
-  "hosting": {
-    "source": "frontend",
-    "frameworksBackend": {
-      "region": "us-central1"
+  "hosting": [
+    {
+      "target": "tender-app",
+      "source": "frontend",
+      "frameworksBackend": {
+        "region": "us-central1"
+      }
     }
-  }
+  ]
 }

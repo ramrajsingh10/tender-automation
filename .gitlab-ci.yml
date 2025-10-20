@@ -1,0 +1,31 @@
+stages:
+  - build
+  - deploy
+
+variables:
+  NEXT_PUBLIC_TENDER_BACKEND_URL: "https://tender-backend-981270825391.us-central1.run.app"
+
+build_frontend:
+  stage: build
+  image: node:20
+  script:
+    - npm install
+    - npm run frontend:build
+  artifacts:
+    paths:
+      - frontend/.next
+      - frontend/public
+  only:
+    - branches
+
+deploy_frontend:
+  stage: deploy
+  image: node:20
+  script:
+    - npm install -g firebase-tools
+    - cd frontend
+    - firebase deploy --only hosting --project tender-automation-1008
+  dependencies:
+    - build_frontend
+  only:
+    - main

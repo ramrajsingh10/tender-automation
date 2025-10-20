@@ -1,5 +1,14 @@
 {
   "projects": {
     "default": "tender-automation-1008"
+  },
+  "targets": {
+    "tender-automation-1008": {
+      "hosting": {
+        "tender-app": [
+          "tender-automation-1008"
+        ]
+      }
+    }
   }
 }

@@ -21,10 +21,11 @@ npm install
 This bootstraps workspace dependencies (currently the frontend package).
 
 ## Frontend
-- Start dev server: `npm run web:dev`
-- Lint: `npm run web:lint`
-- Production build: `npm run web:build`
-- Start production server locally: `npm run web:start`
+- Start dev server: `npm run frontend:dev`
+  - Lint: `npm run frontend:lint`
+  - Production build: `npm run frontend:build`
+  - Start production server locally: `npm run frontend:start`
+- For local backend testing, create `frontend/.env.development.local` with overrides (e.g. `NEXT_PUBLIC_TENDER_BACKEND_URL=http://localhost:8000`). The checked-in `.env.local` is used for deployments and points at the production API.
 
 Environment variables for the web app live in frontend/.env.example; copy to frontend/.env.local for local development.
 
@@ -38,7 +39,7 @@ uvicorn main:app --app-dir services/<service-name> --reload
 Deploy the services to Cloud Run with the provided VS Code tasks or by running the `gcloud run deploy` commands defined in `.vscode/tasks.json`.
 
 ## Testing
-- Web lint/build checks: `npm run web:lint` and `npm run web:build`.
+- Web lint/build checks: `npm run frontend:lint` and `npm run frontend:build`.
 - Python service smoke tests (from a virtual environment):
   ```bash
   python -m pip install -r services/<service-name>/requirements.txt pytest
@@ -46,15 +47,16 @@ Deploy the services to Cloud Run with the provided VS Code tasks or by running t
   ```
 - VS Code tasks execute the same installation + pytest flow for individual services.
 
-## CI/CD Notes
-- Ensure pipelines run `npm run web:build` from the repo root and store artifacts from frontend/.next if needed.
-- When adding Python service tests to CI, replicate the commands above before executing pytest.
-
 ## Agents
 agents/ contains scaffolding for future worker-style automation. Add one subdirectory per agent, document runtime requirements, and supply env templates (.env.example) alongside the code.
 
+## OCR + RAG Roadmap
+We are transitioning to an OCR-first pipeline that feeds a RAG index and AI agents.  
+Implementation details, phased rollout, and open questions live in [`docs/NewApproach.md`](docs/NewApproach.md).
+
 ## Deployment
-- **Frontend**: firebase.json points Hosting to frontend and deploys the framework build artifact in frontend/.next. Run `npm run web:build` before firebase deploy --only hosting.
+- **Frontend**: firebase.json points Hosting to frontend and deploys the framework build artifact in frontend/.next. Run `npm run frontend:build` before firebase deploy --only hosting.
+- **GitLab CI**: ensure the build job exports `NEXT_PUBLIC_TENDER_BACKEND_URL=https://tender-backend-981270825391.us-central1.run.app` (for example by setting a protected CI/CD variable) so production bundles never fall back to `http://localhost:8000`.
 - **Services**: Use the gcloud tasks in .vscode/tasks.json or replicate the commands in CI/CD to deploy each FastAPI service to Cloud Run (us-central1).
 - **Service accounts**: Follow [`docs/service-accounts.md`](docs/service-accounts.md) when assigning IAM and attaching service accounts to Cloud Run services.
 - **Google Drive**: Set `GOOGLE_DRIVE_PARENT_FOLDER_ID=0AIIJEYSn69gTUk9PVA` (Tenders shared drive) for the artifact builder service; Secret Manager usage is outlined in `services/artifact-builder/README.md`.

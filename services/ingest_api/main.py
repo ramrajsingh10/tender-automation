@@ -10,12 +10,10 @@ from typing import Any
 from cloudevents.http import from_http
 from fastapi import FastAPI, HTTPException, Request, status
 from google.auth import exceptions as auth_exceptions
-from google.cloud import firestore, pubsub_v1, storage
+from google.cloud import firestore, storage
 from google.cloud.firestore import Client as FirestoreClient
 from google.cloud.storage import Client as StorageClient
 from pydantic import BaseModel
-
-from normalizer import NormalizationError, normalize_docai_documents
 
 logger = logging.getLogger(__name__)
 
@@ -25,28 +23,18 @@ class Settings:
     project_id: str = os.getenv("GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT", "")
     parsed_bucket: str = os.getenv("PARSED_TENDER_BUCKET", "parsedtenderdata")
     raw_bucket: str = os.getenv("RAW_TENDER_BUCKET", "rawtenderdata")
-    pipeline_topic: str = os.getenv("PIPELINE_TOPIC", "")
-    ingest_collection: str = os.getenv("INGEST_COLLECTION", "ingestJobs")
-    parsed_collection: str = os.getenv("PARSED_COLLECTION", "parsedDocuments")
+    ocr_jobs_collection: str = os.getenv("OCR_JOBS_COLLECTION", "ocrJobs")
+    ocr_collection: str = os.getenv("OCR_COLLECTION", "ocrDocuments")
     tenders_collection: str = os.getenv("TENDERS_COLLECTION", "tenders")
-
-    def resolved_topic(self, publisher: pubsub_v1.PublisherClient) -> str:
-        if not self.pipeline_topic:
-            raise RuntimeError("PIPELINE_TOPIC environment variable is required.")
-        if self.pipeline_topic.startswith("projects/"):
-            return self.pipeline_topic
-        if not self.project_id:
-            raise RuntimeError(
-                "Unable to resolve Pub/Sub topic path without project id. "
-                "Set GCP_PROJECT or provide a fully qualified PIPELINE_TOPIC."
-            )
-        return publisher.topic_path(self.project_id, self.pipeline_topic)
 
 
 settings = Settings()
 _storage_client: StorageClient | None = None
 _firestore_client: FirestoreClient | None = None
-_publisher_client: pubsub_v1.PublisherClient | None = None
+
+
+class OCRProcessingError(RuntimeError):
+    """Raised when OCR output is missing or corrupt."""
 
 
 def get_storage_client() -> StorageClient:
@@ -75,20 +63,6 @@ def get_firestore_client() -> FirestoreClient:
             "FIRESTORE_EMULATOR_HOST before using the ingest API."
         ) from exc
     return _firestore_client
-
-
-def get_publisher_client() -> pubsub_v1.PublisherClient:
-    global _publisher_client
-    if _publisher_client is not None:
-        return _publisher_client
-    try:
-        _publisher_client = pubsub_v1.PublisherClient()
-    except auth_exceptions.DefaultCredentialsError as exc:
-        raise RuntimeError(
-            "Pub/Sub credentials not configured. Set GOOGLE_APPLICATION_CREDENTIALS or "
-            "use the Pub/Sub emulator before publishing pipeline triggers."
-        ) from exc
-    return _publisher_client
 
 
 class PipelineNormalizeRequest(BaseModel):
@@ -149,56 +123,41 @@ def create_app() -> FastAPI:
 
         try:
             documents = _load_docai_documents(output_uris)
-            normalized_document = normalize_docai_documents(
+            ocr_document = build_ocr_document(
                 documents,
                 tender_id=tender_id,
                 raw_uris=raw_uris,
                 docai_output_uris=output_uris,
             )
-        except NormalizationError as exc:
-            logger.exception("Normalization failed for tender %s.", tender_id)
+        except OCRProcessingError as exc:
+            logger.exception("Failed to build OCR document for tender %s.", tender_id)
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
         now = datetime.now(timezone.utc)
         firestore_client = get_firestore_client()
-        ingest_ref = firestore_client.collection(settings.ingest_collection).document()
-        ingest_payload = {
+        job_ref = firestore_client.collection(settings.ocr_jobs_collection).document()
+        job_payload = {
             "tenderId": tender_id,
             "eventId": event_id,
             "docAiOutputUris": output_uris,
             "rawObjectUris": raw_uris,
             "startedAt": now.isoformat(),
-            "status": "received",
+            "status": "stored",
         }
-        ingest_ref.set(ingest_payload)
+        job_ref.set(job_payload)
 
-        firestore_client.collection(settings.parsed_collection).document(tender_id).set(
-            normalized_document, merge=True
+        firestore_client.collection(settings.ocr_collection).document(tender_id).set(
+            ocr_document, merge=True
         )
 
         _ensure_tender_stub(tender_id, now)
 
-        trigger_payload = {
-            "tenderId": tender_id,
-            "ingestJobId": ingest_ref.id,
-            "docAiOutputUris": output_uris,
-            "receivedAt": now.isoformat(),
-        }
-        publisher_client = get_publisher_client()
-        topic_path = settings.resolved_topic(publisher_client)
-        publish_future = publisher_client.publish(
-            topic_path,
-            data=json.dumps(trigger_payload).encode("utf-8"),
-            tenderId=tender_id,
-        )
-        publish_future.result(timeout=10)
-
-        firestore_client.collection(settings.ingest_collection).document(ingest_ref.id).update(
-            {"status": "queued", "queuedAt": datetime.now(timezone.utc).isoformat()}
+        firestore_client.collection(settings.ocr_jobs_collection).document(job_ref.id).update(
+            {"status": "stored", "storedAt": datetime.now(timezone.utc).isoformat()}
         )
 
-        logger.info("Queued tender %s for orchestration (job %s).", tender_id, ingest_ref.id)
-        return {"status": "queued", "tenderId": tender_id, "ingestJobId": ingest_ref.id}
+        logger.info("Stored OCR payload for tender %s (job %s).", tender_id, job_ref.id)
+        return {"status": "stored", "tenderId": tender_id, "ocrJobId": job_ref.id}
 
     @app.post("/pipeline/normalize", status_code=status.HTTP_200_OK)
     async def acknowledge_normalization(payload: PipelineNormalizeRequest) -> dict[str, str]:
@@ -224,7 +183,7 @@ def create_app() -> FastAPI:
         )
 
         if payload.ingestJobId:
-            firestore_client.collection(settings.ingest_collection).document(payload.ingestJobId).set(
+            firestore_client.collection(settings.ocr_jobs_collection).document(payload.ingestJobId).set(
                 {"tenderId": tender_id, "status": "normalized", "normalizedAt": now},
                 merge=True,
             )
@@ -271,22 +230,22 @@ def _load_docai_documents(output_uris: list[str]) -> list[dict[str, Any]]:
         bucket = get_storage_client().bucket(bucket_name)
         blob = bucket.blob(blob_name)
         if not blob.exists():
-            raise NormalizationError(f"Document AI output {uri} not found.")
+            raise OCRProcessingError(f"Document AI output {uri} not found.")
         payload = json.loads(blob.download_as_bytes())
         document = payload.get("document") if isinstance(payload, dict) else None
         if not document:
-            raise NormalizationError(f"Document AI file {uri} missing 'document' field.")
+            raise OCRProcessingError(f"Document AI file {uri} missing 'document' field.")
         documents.append(document)
     return documents
 
 
 def _parse_gcs_uri(uri: str) -> tuple[str, str]:
     if not uri.startswith("gs://"):
-        raise NormalizationError(f"Unsupported GCS URI: {uri}")
+        raise OCRProcessingError(f"Unsupported GCS URI: {uri}")
     _, remainder = uri.split("gs://", 1)
     bucket, _, object_name = remainder.partition("/")
     if not bucket or not object_name:
-        raise NormalizationError(f"Invalid GCS URI: {uri}")
+        raise OCRProcessingError(f"Invalid GCS URI: {uri}")
     return bucket, object_name
 
 
@@ -304,3 +263,65 @@ def _ensure_tender_stub(tender_id: str, timestamp: datetime) -> None:
 
 
 app = create_app()
+
+
+def build_ocr_document(
+    documents: list[dict[str, Any]],
+    *,
+    tender_id: str,
+    raw_uris: list[str],
+    docai_output_uris: list[str],
+) -> dict[str, Any]:
+    timestamp = datetime.now(timezone.utc).isoformat()
+    pages: list[dict[str, Any]] = []
+    fallback_page_number = 0
+
+    for document in documents:
+        full_text = document.get("text", "")
+        for page in document.get("pages", []):
+            fallback_page_number += 1
+            page_number = page.get("pageNumber") or fallback_page_number
+            page_text = _extract_text_from_layout(page.get("layout", {}), full_text)
+            if not page_text.strip():
+                # Fallback to concatenating paragraph text if page layout is missing.
+                paragraph_text = [
+                    _extract_text_from_layout(paragraph.get("layout", {}), full_text)
+                    for paragraph in page.get("paragraphs", [])
+                ]
+                page_text = "\n".join(segment for segment in paragraph_text if segment).strip()
+
+            pages.append(
+                {
+                    "pageNumber": page_number,
+                    "text": page_text,
+                    "detectedLanguages": page.get("detectedLanguages", []),
+                    "dimension": page.get("dimension", {}),
+                }
+            )
+
+    if not pages:
+        raise OCRProcessingError("OCR output did not contain any pages.")
+
+    return {
+        "tenderId": tender_id,
+        "source": {
+            "docAiOutput": docai_output_uris,
+            "rawBundle": raw_uris,
+        },
+        "pages": pages,
+        "createdAt": timestamp,
+        "schemaVersion": 1,
+    }
+
+
+def _extract_text_from_layout(layout: dict[str, Any], full_text: str) -> str:
+    text_anchor = (layout or {}).get("textAnchor", {})
+    segments = text_anchor.get("textSegments", [])
+    if not segments:
+        return ""
+    fragments: list[str] = []
+    for segment in segments:
+        start = int(segment.get("startIndex", 0))
+        end = int(segment.get("endIndex", 0))
+        fragments.append(full_text[start:end])
+    return "".join(fragments)
