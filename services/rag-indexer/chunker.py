@@ -16,21 +16,23 @@ def chunk_document(
     tender_id: str,
     document: dict[str, Any],
     *,
-    max_chars: int = 1200,
+    max_chars: int = 1000,
 ) -> List[Chunk]:
     pages = document.get("pages", [])
     sections = document.get("sections", [])
     tables = document.get("tables", [])
 
-    if not sections and not tables and _pages_have_text(pages):
-        return [
-            chunk
-            for chunk in _chunk_pages_from_text(tender_id, pages, max_chars=max_chars)
-            if chunk.text.strip()
-        ]
+    # Default to OCR-only chunking when no structured sections/tables exist.
+    chunks: list[Chunk] = []
+
+    if _pages_have_text(pages):
+        chunks.extend(_chunk_pages_from_text(tender_id, pages, max_chars=max_chars))
+
+    if not sections and not tables:
+        return [chunk for chunk in chunks if chunk.text.strip()]
 
     anchor_blocks = _build_anchor_block_lookup(pages)
-    chunks: list[Chunk] = []
+
 
     for section in sections:
         section_id = section.get("sectionId") or "section"
@@ -194,22 +196,26 @@ def _split_into_chunks(
         paragraph = (paragraph or "").strip()
         if not paragraph:
             continue
-        if current_len + len(paragraph) > max_chars and buffer:
-            text = "\n".join(buffer)
-            chunk_id = f"{prefix}-{counter}"
-            chunks.append(
-                Chunk(
-                    chunk_id=chunk_id,
-                    tender_id=tender_id,
-                    text=text,
-                    metadata={**base_metadata, "sequence": counter},
+
+        slices = [paragraph[i : i + max_chars] for i in range(0, len(paragraph), max_chars)]
+        for slice_text in slices:
+            if current_len + len(slice_text) > max_chars and buffer:
+                text = "\n".join(buffer)
+                chunk_id = f"{prefix}-{counter}"
+                chunks.append(
+                    Chunk(
+                        chunk_id=chunk_id,
+                        tender_id=tender_id,
+                        text=text,
+                        metadata={**base_metadata, "sequence": counter},
+                    )
                 )
-            )
-            buffer = []
-            current_len = 0
-            counter += 1
-        buffer.append(paragraph)
-        current_len += len(paragraph)
+                buffer = []
+                current_len = 0
+                counter += 1
+
+            buffer.append(slice_text)
+            current_len += len(slice_text)
 
     if buffer:
         chunk_id = f"{prefix}-{counter}"

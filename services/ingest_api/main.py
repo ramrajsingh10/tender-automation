@@ -232,9 +232,11 @@ def _load_docai_documents(output_uris: list[str]) -> list[dict[str, Any]]:
         if not blob.exists():
             raise OCRProcessingError(f"Document AI output {uri} not found.")
         payload = json.loads(blob.download_as_bytes())
-        document = payload.get("document") if isinstance(payload, dict) else None
-        if not document:
-            raise OCRProcessingError(f"Document AI file {uri} missing 'document' field.")
+        if not isinstance(payload, dict):
+            raise OCRProcessingError(f"Document AI file {uri} had unexpected payload type.")
+        document = payload.get("document") or payload.get("ocrDocument") or payload
+        if not isinstance(document, dict) or "pages" not in document:
+            raise OCRProcessingError(f"Document AI file {uri} missing page data.")
         documents.append(document)
     return documents
 
@@ -281,14 +283,21 @@ def build_ocr_document(
         for page in document.get("pages", []):
             fallback_page_number += 1
             page_number = page.get("pageNumber") or fallback_page_number
-            page_text = _extract_text_from_layout(page.get("layout", {}), full_text)
-            if not page_text.strip():
-                # Fallback to concatenating paragraph text if page layout is missing.
-                paragraph_text = [
-                    _extract_text_from_layout(paragraph.get("layout", {}), full_text)
-                    for paragraph in page.get("paragraphs", [])
-                ]
-                page_text = "\n".join(segment for segment in paragraph_text if segment).strip()
+            segments: list[str] = []
+            for paragraph in page.get("paragraphs", []) or []:
+                text = _extract_text_from_layout(paragraph.get("layout", {}), full_text)
+                if text.strip():
+                    segments.append(text.strip())
+
+            for block in page.get("blocks", []) or []:
+                text = _extract_text_from_layout(block.get("layout", {}), full_text)
+                if text.strip():
+                    segments.append(text.strip())
+
+            page_text = "\n".join(segments).strip()
+
+            if not page_text:
+                page_text = _extract_text_from_layout(page.get("layout", {}), full_text).strip()
 
             pages.append(
                 {

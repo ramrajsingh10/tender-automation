@@ -4,12 +4,15 @@ import logging
 import os
 from typing import Iterable, List
 
-import numpy as np
-from google.cloud import aiplatform
 import vertexai
+from google.cloud import aiplatform
+from google.cloud.aiplatform_v1.types import IndexDatapoint
 from vertexai.language_models import TextEmbeddingModel
 
 logger = logging.getLogger(__name__)
+
+
+_EMBED_MAX_CHARS = 1500
 
 
 class EmbeddingClient:
@@ -24,8 +27,31 @@ class EmbeddingClient:
         texts = list(texts)
         if not texts:
             return []
-        embeddings = self._model.get_embeddings(texts)
-        return [embedding.values for embedding in embeddings]
+        embeddings: list[list[float]] = []
+        for text in texts:
+            text = text or ""
+            if not text.strip():
+                embeddings.append([])
+                continue
+
+            slices = [text[i : i + _EMBED_MAX_CHARS] for i in range(0, len(text), _EMBED_MAX_CHARS)]
+            slice_vectors: list[list[float]] = []
+            for chunk in slices:
+                response = self._model.get_embeddings([chunk])
+                slice_vectors.append(response[0].values)
+
+            if not slice_vectors:
+                embeddings.append([])
+                continue
+
+            vector_length = len(slice_vectors[0])
+            averaged = [0.0] * vector_length
+            for vector in slice_vectors:
+                for idx, value in enumerate(vector):
+                    averaged[idx] += value
+            averaged = [value / len(slice_vectors) for value in averaged]
+            embeddings.append(averaged)
+        return embeddings
 
 
 class VectorIndexClient:
@@ -44,16 +70,25 @@ class VectorIndexClient:
         if not datapoints:
             return
 
-        matching_datapoints = []
-        namespace = aiplatform.matching_engine
+        matching_datapoints: list[IndexDatapoint] = []
         for point in datapoints:
-            vector = point["feature_vector"]
+            restrict_entries = []
+            for entry in point.get("restricts", []):
+                restrict_entries.append(
+                    IndexDatapoint.RestrictEntry(
+                        namespace=entry.get("namespace", ""),
+                        allow_list=entry.get("allowList", []),
+                        deny_list=entry.get("denyList", []),
+                    )
+                )
+
             matching_datapoints.append(
-                namespace.Datapoint(
+                IndexDatapoint(
                     datapoint_id=point["datapoint_id"],
-                    feature_vector=vector,
-                    restricts=point.get("restricts"),
+                    feature_vector=point["feature_vector"],
+                    restricts=restrict_entries,
                     crowding_tag=point.get("crowding_tag"),
                 )
             )
+
         self._endpoint.upsert_datapoints(index_id=self._index_id, datapoints=matching_datapoints)
