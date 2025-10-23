@@ -1,178 +1,105 @@
-# Storage, Events, and Normalized Document Schema
+# Storage, Agent Outputs, and Event Flow (Managed RAG)
 
-This guide specifies the storage layout, Eventarc wiring, and normalized document
-contract that downstream services consume.
+This document captures the storage layout and runtime flow for the new
+managed Vertex RAG pipeline. The previous Document AI normalization
+details now live in `docs/OldApproach.md`.
 
 ## Google Cloud Storage Layout
 
-We operate with three primary buckets (names configurable via environment variables):
+We operate with three primary buckets (names remain configurable through
+environment variables):
 
 | Purpose | Default Bucket | Structure |
 | --- | --- | --- |
 | Raw document uploads | `rawtenderdata` | `/{tenderId}/{storedName}` |
-| Document AI outputs | `parsedtenderdata` | `/{tenderId}/docai/output/result-{index}.json` |
-| Generated artifacts | `tender-artifacts` | `/{tenderId}/{artifactType}/{version}/{fileName}` |
+| Vertex RAG playbook results | `parsedtenderdata` | `/{tenderId}/rag/results-YYYYMMDDThhmmssZ.json` |
+| Generated artifacts (optional) | `tender-artifacts` | `/{tenderId}/{artifactType}/{version}/{fileName}` |
 
-- **Raw uploads** hold the exact files users drop into the UI. Filenames are sanitized
-  in `backend/app/routes/uploads.py` and stored with UUID prefixes.
-- **Parsed outputs** contain the Document AI batch results. We keep all result shards
-  for debugging. The backend records `parse.outputUri` pointing to the directory.
-- **Artifacts** store annexure reproductions, compliance checklists, and baseline
-  plans. Each artifact version gets a monotonically increasing number and checksum.
+- **Raw uploads** hold the exact files users submit via the UI. Filenames are
+  sanitized and stored with UUID prefixes in `backend/app/routes/uploads.py`. Multiple
+  documents per tender are allowed.
+- **RAG results** contain the JSON emitted by the orchestrator after running the
+  managed Vertex AI playbook. Filenames are timestamped so each run is preserved.
+  The backend records `parse.outputUri` pointing at the most recent JSON file.
+- **Artifacts** continue to store annexure reproductions, compliance checklists,
+  and other generated deliverables. These are optional in the new flow.
 
-### Metadata Conventions
+## Vertex RAG Playbook Output
 
-- All objects include metadata keys:
-  - `tender-id`: UUID string aligning with Firestore documents.
-  - `source-type`: `raw`, `docai`, `artifact`.
-  - `artifact-type`: present for artifact objects (`annexure-a`, `checklist`, `plan`).
-- Checksums (`crc32c` and `md5Hash`) are validated before marking uploads complete.
-
-## Eventarc Trigger
-
-- **Trigger**: `google.cloud.storage.object.v1.finalized` on bucket `parsedtenderdata`.
-- **Filter**: object name pattern `*.json` to limit to Document AI outputs.
-- **Destination**: Cloud Run service `ingest-api` (region `us-central1` unless overridden).
-- **Dead-letter**: Pub/Sub topic `eventarc-ingest-dlq` for failed deliveries.
-
-Ingest service responsibilities:
-1. Confirm the object corresponds to a known `tenderId` (via metadata or path).
-2. Fetch the full Document AI output set (multi-file support).
-3. Emit an `ingestJobs` record and normalized document payload into Firestore.
-4. Publish a message to the orchestrator queue (`projects/.../topics/tender-pipeline`).
-
-## Normalized Document Schema
-
-All downstream agents consume the normalized document that lives in
-`parsedDocuments/{tenderId}`. The schema is versioned so we can evolve fields without
-breaking extractors.
-
-### Top-Level Structure
+Each JSON file written under `gs://parsedtenderdata/{tenderId}/rag/` follows this shape:
 
 ```jsonc
 {
-  "schemaVersion": 1,
-  "tenderId": "d587…",
-  "source": {
-    "docAiOutput": ["gs://parsedtenderdata/d587/docai/output/result-0.json"],
-    "rawBundle": ["gs://rawtenderdata/d587/abc.pdf"]
-  },
-  "document": {
-    "pages": [...],
-    "sections": [...],
-    "tables": [...],
-    "attachments": [...]
-  },
-  "textIndex": {
-    "anchors": {...},
-    "tokens": [...]
-  },
-  "metadata": {
-    "title": "Request for Proposal – …",
-    "issuingAuthority": "Department of …",
-    "publishedAt": "2024-05-01",
-    "language": "en",
-    "ocrApplied": true
-  },
-  "createdAt": "2024-05-18T12:33:17Z"
-}
-```
-
-#### `document.pages`
-
-Array of pages preserving layout:
-```jsonc
-{
-  "pageNumber": 1,
-  "dimensions": {"width": 8.27, "height": 11.69, "unit": "inch"},
-  "blocks": [
+  "tenderId": "827b7205-e857-400b-bdc4-12c79849db36",
+  "generatedAt": "2025-10-22T13:45:07Z",
+  "results": [
     {
-      "type": "text",
-      "anchorId": "a0001",
-      "boundingPoly": [{"x": 0.12, "y": 0.10}, ...],
-      "text": "Invitation for Bids …"
-    },
-    {
-      "type": "image",
-      "resource": "gs://rawtenderdata/d587/page-1-figure-1.png",
-      "boundingPoly": [...]
+      "questionId": "submission_deadline",
+      "question": "What is the submission deadline for this tender? Include date and time if specified.",
+      "answers": [
+        {
+          "text": "Bids must be submitted by 12 November 2025 at 3:00 PM IST.",
+          "citations": [
+            {
+              "startIndex": 42,
+              "endIndex": 93,
+              "sources": [
+                {
+                  "reference": {
+                    "document": "projects/.../ragCorpora/.../ragFiles/123",
+                    "title": "Section 4: Submission Instructions",
+                    "uri": "gs://rawtenderdata/827b7205-e857-400b-bdc4-12c79849db36/tender.pdf",
+                    "chunkContents": [
+                      {"content": "Submissions are due by 12 November 2025 at 15:00 hrs IST.", "pageIdentifier": "Page 9"}
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      ],
+      "documents": [
+        {
+          "id": "projects/.../documents/456",
+          "title": "Submission Instructions",
+          "snippet": "Proposals must be submitted no later than 12 November 2025, 3:00 PM IST",
+          "uri": "gs://rawtenderdata/.../tender.pdf"
+        }
+      ]
     }
   ]
 }
 ```
 
-#### `document.sections`
-
-Logical sections derived from DocAI headings and TOC cues:
-```jsonc
-{
-  "sectionId": "sec-annexure-a",
-  "title": "Annexure A – Bidder Information",
-  "level": 2,
-  "anchorRange": {"start": "a1050", "end": "a1350"},
-  "pageRange": {"start": 23, "end": 30}
-}
-```
-
-#### `document.tables`
-
-Normalized representation with original cell text and coordinates:
-```jsonc
-{
-  "tableId": "tbl-penalties",
-  "sectionId": "sec-penalties",
-  "page": 18,
-  "headers": [
-    {"anchorId": "a5010", "text": "Clause"},
-    {"anchorId": "a5011", "text": "Penalty"}
-  ],
-  "rows": [
-    [
-      {"anchorId": "a5012", "text": "Delayed Delivery"},
-      {"anchorId": "a5013", "text": "1% per week"}
-    ]
-  ]
-}
-```
-
-#### `document.attachments`
-
-Entries for annexures or appended docs that may require separate handling:
-```jsonc
-{
-  "name": "Annexure B – Financial Bid Format",
-  "sectionId": "sec-annexure-b",
-  "pageRange": {"start": 31, "end": 35},
-  "rawUri": "gs://rawtenderdata/d587/annexure-b.pdf",
-  "mimeType": "application/pdf",
-  "checksum": "sha256:…"
-}
-```
-
-### `textIndex`
-
-- `anchors`: map of anchor ID → `{page, startIndex, endIndex}` for quick lookup.
-- `tokens`: optional array with tokenized text for search/debugging.
-
-### Provenance
-
-Every structural element includes anchor IDs referencing the underlying text or image
-region so extractors can provide deterministic citations. Annexure reconstruction
-uses the `pageRange` and `attachment` metadata to extract high-fidelity copies.
+The frontend validation workspace and backend `GET /api/tenders/{tenderId}/playbook`
+endpoint surface this data directly.
 
 ## Event Flow Summary
 
-1. User upload → raw bucket.
-2. FastAPI backend marks status and triggers DocAI batch.
-3. DocAI writes JSON outputs → parsed bucket.
-4. Eventarc fires to `ingest-api`.
-5. Ingest normalizes data and writes Firestore documents.
-6. Orchestrator consumes Firestore + Pub/Sub events to run extractors/artifact builders.
-7. Outputs stored back to Firestore and artifacts bucket; dashboard consumes Firestore.
+1. **Upload:** The user drops one or more files in the UI. Files land in
+   `gs://rawtenderdata/{tenderId}/`.
+2. **Trigger:** When the BA clicks “Process”, the backend calls the orchestrator’s
+   `/rag/playbook` endpoint with the list of raw GCS URIs.
+3. **Vertex RAG import & questions:** The orchestrator
+   - Imports the raw bundle into the configured `ragCorpora` using the
+     Vertex Rag Data API,
+   - Executes the curated question set (`DEFAULT_PLAYBOOK`) via Discovery Engine
+     search,
+   - Writes the JSON payload shown above to `parsedtenderdata/{tenderId}/rag/`,
+   - Deletes the imported RagFiles so the corpus is clean for the next run.
+4. **Surfacing results:** The backend updates the tender session status to `parsed`
+   and records the `parse.outputUri`. The validation UI reads the JSON for review,
+   and the BA can re-run the playbook at any time.
 
-## Deployment Checklist
+### Multi-file Tenders
 
-- Enable Eventarc service account access to parsed bucket and Cloud Run.
-- Grant `ingest-api` service account read access to raw/parsed buckets and write to Firestore.
-- Create Pub/Sub topic `tender-pipeline` and grant orchestrator service account publish/subscribe.
-- Maintain IaC (Terraform/Google Cloud Deploy) to manage triggers, buckets, and IAM bindings.
+The orchestrator imports every `gs://rawtenderdata/{tenderId}/{storedName}` supplied
+in the request. Vertex Agent Builder chunking handles the combined corpus, so answers
+reflect all uploaded documents.
+
+### Legacy Document AI Flow
+
+The original Document AI normalization pipeline and Firestore schema are preserved
+for reference in `docs/OldApproach.md`. No new data is written to `docai/output/`
+under the managed RAG workflow.

@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .routes import dashboard, tenders, uploads
+from .routes import dashboard, rag, tenders, uploads
 from .settings import api_settings
 
 
@@ -30,6 +30,7 @@ def create_app() -> FastAPI:
     app.include_router(tenders.router)
     app.include_router(uploads.router)
     app.include_router(dashboard.router)
+    app.include_router(rag.router)
 
     return app
 

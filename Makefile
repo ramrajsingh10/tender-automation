@@ -7,7 +7,6 @@ install-services:
 	pip install -r services/extractors/requirements.txt
 	pip install -r services/qa_loop/requirements.txt
 	pip install -r services/artifact-builder/requirements.txt
-	pip install -r services/rag-indexer/requirements.txt
 
 compose-up:
 	docker-compose up --build

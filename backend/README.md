@@ -1,13 +1,17 @@
-## Tender Automation Backend (Phase 1 MVP)
+## Tender Automation Backend (Managed RAG Pipeline)
 
-Python FastAPI service that powers the tender upload pipeline. It exposes APIs for:
+Python FastAPI service that powers the tender upload pipeline. It now
+coordinates multi-file uploads, invokes the orchestrator’s Vertex RAG
+playbook, and exposes APIs for reviewing answers.
 
-- Creating tender sessions (one per upload batch).
-- Requesting signed upload URLs for raw documents.
-- Recording upload completion status to drive downstream parsing.
+Key capabilities:
 
-> **Note:** By default the service uses Firestore to persist tender sessions in production. Set `STORE_BACKEND=memory` if you need
-> an in-memory store for quick local experiments.
+- Create tender sessions and return signed upload URLs.
+- Record upload completion status for every file in a bundle.
+- Trigger the orchestrator to import the bundle into Vertex RAG, run the
+  managed question set, and write the JSON results to Cloud Storage.
+- Expose `/api/tenders/{tenderId}/playbook` so the UI (and operators) can
+  inspect the latest AI answers with citations.
 
 ---
 
@@ -16,10 +20,11 @@ Python FastAPI service that powers the tender upload pipeline. It exposes APIs f
 1. **Python 3.11+** installed locally.
 2. **Google Cloud credentials** on the machine running the service:
    - Activate Application Default Credentials with `gcloud auth application-default login`, *or*
-   - Point `GOOGLE_APPLICATION_CREDENTIALS` to a service account key file that has `roles/storage.objectAdmin`.
+   - Point `GOOGLE_APPLICATION_CREDENTIALS` to a service account key that has `roles/storage.objectAdmin`.
 3. Cloud resources already provisioned:
    - Buckets: `rawtenderdata`, `parsedtenderdata`.
-   - Document AI processor(s) (used later in Phase 2).
+   - Vertex Agent Builder data store + rag corpus (see `docs/NewApproach.md`).
+   - Orchestrator Cloud Run service reachable via `ORCHESTRATOR_BASE_URL`.
 4. Dedicated service account configured as described in [`docs/service-accounts.md`](../docs/service-accounts.md).
 
 ### 2. Environment variables
@@ -30,13 +35,13 @@ Set these before starting the server (values shown are defaults used if nothing 
 | --- | --- | --- |
 | `GCP_PROJECT_ID` | Google Cloud project hosting the resources | _(empty)_ |
 | `RAW_TENDER_BUCKET` | Bucket for original uploads | `rawtenderdata` |
-| `PARSED_TENDER_BUCKET` | Bucket for parser outputs | `parsedtenderdata` |
-| `DOCUMENT_AI_LOCATION` | Region for Document AI processors | `us` |
-| `DOCUMENT_AI_PROCESSOR_ID` | Processor used in Phase 2 | _(empty)_ |
+| `PARSED_TENDER_BUCKET` | Bucket for playbook outputs | `parsedtenderdata` |
 | `SIGNED_URL_EXPIRATION_SECONDS` | Validity period for upload URLs | `900` (15 min) |
 | `API_ALLOWED_ORIGINS` | Comma separated list of CORS origins | `*` |
 | `STORE_BACKEND` | `firestore` (default) or `memory` | `memory` |
 | `FIRESTORE_COLLECTION` | Firestore collection that stores tender sessions | `tenderSessions` |
+| `ORCHESTRATOR_BASE_URL` | Base URL for the Cloud Run orchestrator | _(empty)_ |
+| `RAG_CLIENT_TIMEOUT_SECONDS` | Timeout (seconds) when calling the orchestrator | `30` |
 
 Example (PowerShell):
 
@@ -44,8 +49,7 @@ Example (PowerShell):
 $env:GCP_PROJECT_ID = "tender-automation-1008"
 $env:RAW_TENDER_BUCKET = "rawtenderdata"
 $env:PARSED_TENDER_BUCKET = "parsedtenderdata"
-$env:DOCUMENT_AI_LOCATION = "us"
-$env:DOCUMENT_AI_PROCESSOR_ID = "your-processor-id"
+$env:ORCHESTRATOR_BASE_URL = "https://orchestrator-lblqj4e2ba-uc.a.run.app"
 $env:API_ALLOWED_ORIGINS = "http://localhost:3000"
 $env:STORE_BACKEND = "firestore"
 $env:FIRESTORE_COLLECTION = "tenderSessions"
@@ -78,9 +82,9 @@ The service exposes OpenAPI docs at `http://localhost:8000/docs`.
 | `/api/tenders/{tenderId}` | GET | Inspect session status and file list |
 | `/api/tenders/{tenderId}/uploads/init` | POST | Request a signed URL for one file |
 | `/api/tenders/{tenderId}/uploads/{fileId}/complete` | POST | Mark upload success/failure |
-| `/api/tenders/{tenderId}/process` | POST | Trigger Document AI parsing (runs in background) |
-
-Payload examples are available via the Swagger UI.
+| `/api/tenders/{tenderId}/process` | POST | Trigger the orchestrator playbook (imports into Vertex RAG, runs questions, writes JSON) |
+| `/api/tenders/{tenderId}/playbook` | GET | Fetch the most recent playbook results from Cloud Storage |
+| `/api/rag/query` | POST | Proxy a single ad-hoc question to Agent Builder |
 
 ### 6. Manual test script (Postman / curl)
 
@@ -118,18 +122,26 @@ Payload examples are available via the Swagger UI.
    Invoke-RestMethod -Uri "http://localhost:8000/api/tenders/$tenderId"
    ```
 
-5. **Trigger parsing (after all files uploaded)**
+5. **Trigger the playbook (after all files uploaded)**
 
    ```powershell
    Invoke-RestMethod -Method POST -Uri "http://localhost:8000/api/tenders/$tenderId/process"
    ```
 
-   Poll the status endpoint until `status` becomes `parsed` or `failed`. Parsed sessions include `parse.outputUri` with the `gs://` destination produced by Document AI.
+   The response immediately reflects the updated status (`parsing`). When the orchestrator completes, the session transitions to `parsed` and `parse.outputUri` points to the JSON file written under `gs://parsedtenderdata/{tenderId}/rag/`.
+
+6. **Inspect AI answers**
+
+   ```powershell
+   Invoke-RestMethod -Uri "http://localhost:8000/api/tenders/$tenderId/playbook"
+   ```
+
+   The payload matches the structure documented in `docs/storage-and-events.md`.
 
 ### 7. Next steps
 
-- Wire the Document AI trigger (Part 2) to call the processor once status hits `UPLOADED`.
 - Harden auth (JWT / Firebase Auth) and observability (structured logging).
+- Extend the playbook output writer if you want to persist summaries to Firestore or other data stores.
 
 ---
 
@@ -140,8 +152,6 @@ A `Dockerfile` is included so you can deploy the service to Cloud Run.
 Build and push:
 
 ```powershell
-gcloud builds submit --config cloudbuild.yaml  # if you add one
-# or directly
 gcloud builds submit --tag gcr.io/$env:GCP_PROJECT_ID/tender-backend .
 ```
 
@@ -153,8 +163,7 @@ docker run --rm -p 8080:8080 `
   -e GCP_PROJECT_ID=$env:GCP_PROJECT_ID `
   -e RAW_TENDER_BUCKET=$env:RAW_TENDER_BUCKET `
   -e PARSED_TENDER_BUCKET=$env:PARSED_TENDER_BUCKET `
-  -e DOCUMENT_AI_LOCATION=$env:DOCUMENT_AI_LOCATION `
-  -e DOCUMENT_AI_PROCESSOR_ID=$env:DOCUMENT_AI_PROCESSOR_ID `
+  -e ORCHESTRATOR_BASE_URL=$env:ORCHESTRATOR_BASE_URL `
   tender-backend
 ```
 
@@ -165,17 +174,17 @@ exists as documented in `docs/service-accounts.md`):
 gcloud run deploy tender-backend `
   --image gcr.io/$env:GCP_PROJECT_ID/tender-backend `
   --platform managed `
-  --region $env:DOCUMENT_AI_LOCATION `
+  --region us-central1 `
   --allow-unauthenticated `
   --service-account sa-backend@tender-automation-1008.iam.gserviceaccount.com `
-  --set-env-vars GCP_PROJECT_ID=$env:GCP_PROJECT_ID,RAW_TENDER_BUCKET=$env:RAW_TENDER_BUCKET,PARSED_TENDER_BUCKET=$env:PARSED_TENDER_BUCKET,DOCUMENT_AI_LOCATION=$env:DOCUMENT_AI_LOCATION,DOCUMENT_AI_PROCESSOR_ID=$env:DOCUMENT_AI_PROCESSOR_ID,SIGNED_URL_EXPIRATION_SECONDS=900,API_ALLOWED_ORIGINS=https://tender-automation--tender-automation-1008.us-central1.hosted.app
+  --set-env-vars GCP_PROJECT_ID=$env:GCP_PROJECT_ID,RAW_TENDER_BUCKET=$env:RAW_TENDER_BUCKET,PARSED_TENDER_BUCKET=$env:PARSED_TENDER_BUCKET,ORCHESTRATOR_BASE_URL=$env:ORCHESTRATOR_BASE_URL,SIGNED_URL_EXPIRATION_SECONDS=900,API_ALLOWED_ORIGINS=https://tender-automation--tender-automation-1008.us-central1.hosted.app
 ```
 
-Attach the service account that has Storage + Document AI roles if needed:
+Attach the service account that has Storage and Discovery Engine roles if needed:
 
 ```powershell
 gcloud run services update tender-backend `
   --platform managed `
-  --region $env:DOCUMENT_AI_LOCATION `
+  --region us-central1 `
   --service-account sa-backend@tender-automation-1008.iam.gserviceaccount.com
 ```

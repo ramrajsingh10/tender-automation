@@ -39,7 +39,6 @@ services:
       - extractor-penalties
       - extractor-annexures
       - artifact-annexures
-      - rag-indexer
       - qa-loop
     command: >
       bash -c "pip install --no-cache-dir -r requirements.txt
@@ -113,15 +112,6 @@ services:
       - config/docker-services.env.example
     ports:
       - "8106:8000"
-
-  rag-indexer:
-    <<: *python-service
-    container_name: rag-indexer
-    working_dir: /workspace/services/rag-indexer
-    env_file:
-      - config/docker-services.env.example
-    ports:
-      - "8107:8000"
 
   qa-loop:
     <<: *python-service

@@ -1,5 +1,9 @@
 # Firestore Data Model
 
+> **Legacy:** This document captures the Firestore layout used by the retired
+> Document AI pipeline. Refer to `docs/NewApproach.md` for the managed Vertex
+> RAG workflow.
+
 This document captures the proposed Firestore layout for the tender automation pipeline.
 It assumes we operate inside the existing GCP project and reuse the `default` and
 `tender-database` Firestore instances. Unless noted otherwise, each collection lives

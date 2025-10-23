@@ -1,7 +1,11 @@
 # Ingest API (Cloud Run)
 
-This service receives Eventarc notifications for Document AI output objects,
-normalizes the payload, and seeds the tender pipeline.
+> **Note:** The managed Vertex RAG pipeline invokes the orchestrator directly and
+> no longer relies on this service. The Ingest API is retained as a reference for
+> the legacy Document AI flow captured in `docs/OldApproach.md`.
+
+This (legacy) service receives Eventarc notifications for Document AI output objects,
+normalizes the payload, and seeds the extractor-based pipeline.
 
 ## Responsibilities
 

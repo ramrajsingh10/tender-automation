@@ -177,3 +177,61 @@ export async function uploadFileToSignedUrl(
     xhr.send(file);
   });
 }
+
+export interface RagCitation {
+  startIndex?: number | null;
+  endIndex?: number | null;
+  sources?: Array<Record<string, unknown>>;
+}
+
+export interface RagAnswer {
+  text: string;
+  citations: RagCitation[];
+}
+
+export interface RagDocumentSummary {
+  id?: string | null;
+  uri?: string | null;
+  title?: string | null;
+  snippet?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+export interface RagQueryResponse {
+  answers: RagAnswer[];
+  documents: RagDocumentSummary[];
+}
+
+export interface RagQueryRequest {
+  tenderId: string;
+  question: string;
+  conversationId?: string;
+  topK?: number;
+}
+
+export async function queryRag(body: RagQueryRequest): Promise<RagQueryResponse> {
+  return request<RagQueryResponse>('/api/rag/query', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+export interface PlaybookResult {
+  questionId: string;
+  question: string;
+  answers: RagAnswer[];
+  documents: RagDocumentSummary[];
+}
+
+export interface PlaybookRun {
+  tenderId: string;
+  generatedAt: string;
+  results: PlaybookResult[];
+}
+
+export async function getPlaybookResults(tenderId: string): Promise<PlaybookRun> {
+  return request<PlaybookRun>(`/api/tenders/${tenderId}/playbook`, {
+    method: 'GET',
+    cache: 'no-store',
+  });
+}

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException
+from fastapi import APIRouter, HTTPException
 
 from .. import schemas
-from ..services.document_ai import DocumentAIServiceError, document_ai_service
+from ..services.rag_client import RagClientError, get_rag_client
+from ..services.storage import StorageServiceError, storage_service
 from ..settings import storage_settings, upload_settings
 from ..store import store
 
@@ -50,56 +52,52 @@ def get_tender_session(tender_id: UUID) -> schemas.TenderStatusResponse:
 
 
 @router.post("/{tender_id}/process", response_model=schemas.TenderStatusResponse)
-def trigger_parsing(
-    tender_id: UUID, background_tasks: BackgroundTasks
-) -> schemas.TenderStatusResponse:
+def trigger_parsing(tender_id: UUID) -> schemas.TenderStatusResponse:
     try:
         session = store.get_session(tender_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     if not session.files:
-        raise HTTPException(
-            status_code=400, detail="No files uploaded for this tender."
-        )
-    if any(file.status != "uploaded" for file in session.files):
-        raise HTTPException(
-            status_code=409,
-            detail="All files must be uploaded before parsing can begin.",
-        )
-    if session.status == schemas.TenderStatus.PARSING:
-        raise HTTPException(
-            status_code=409, detail="Parsing is already in progress for this tender."
-        )
-    if not document_ai_service.is_configured:
-        raise HTTPException(
-            status_code=500,
-            detail=(
-                "Document AI processor is not configured. "
-                "Set DOCUMENT_AI_LOCATION and DOCUMENT_AI_PROCESSOR_ID environment variables."
-            ),
-        )
+        raise HTTPException(status_code=400, detail="No files uploaded for this tender.")
+
+    raw_uris: list[str] = []
+    for file in session.files:
+        if file.status != "uploaded":
+            raise HTTPException(
+                status_code=409,
+                detail="All files must be uploaded before processing can begin.",
+            )
+        if not file.storage_uri:
+            raise HTTPException(
+                status_code=500,
+                detail="Uploaded file is missing its storage URI. Retry the upload before processing.",
+            )
+        raw_uris.append(file.storage_uri)
 
     input_prefix = f"gs://{storage_settings.raw_bucket}/{tender_id}/"
-    output_prefix = f"gs://{storage_settings.parsed_bucket}/{tender_id}/docai/output/"
-
-    try:
-        operation_name = document_ai_service.start_batch_process(
-            input_prefix=input_prefix,
-            output_prefix=output_prefix,
-        )
-    except DocumentAIServiceError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    output_prefix = f"gs://{storage_settings.parsed_bucket}/{tender_id}/rag/"
 
     store.mark_parsing_started(
         tender_id,
-        operation_name=operation_name,
+        operation_name="rag-playbook",
         input_prefix=input_prefix,
         output_prefix=output_prefix,
     )
-    background_tasks.add_task(
-        _monitor_operation, tender_id, operation_name, output_prefix
-    )
+
+    client = get_rag_client()
+    try:
+        playbook_response = client.run_playbook(
+            tender_id=str(tender_id),
+            gcs_uris=raw_uris,
+            forget_after_run=True,
+        )
+    except RagClientError as exc:
+        store.mark_parsing_failed(tender_id, str(exc))
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    output_uri = playbook_response.get("outputUri")
+    store.mark_parsing_succeeded(tender_id, output_uri=output_uri)
 
     updated = store.get_session(tender_id)
     return schemas.TenderStatusResponse(
@@ -111,17 +109,30 @@ def trigger_parsing(
     )
 
 
-def _monitor_operation(
-    tender_id: UUID, operation_name: str, output_prefix: str
-) -> None:
+@router.get("/{tender_id}/playbook")
+def get_playbook_results(tender_id: UUID) -> dict:
     try:
-        result = document_ai_service.wait_for_operation(
-            operation_name,
-            interval_seconds=10,
-            timeout_seconds=1800,
-            progress_callback=lambda: store.mark_parsing_checked(tender_id),
-        )
-        output_uri = document_ai_service.extract_output_uri(result) or output_prefix
-        store.mark_parsing_succeeded(tender_id, output_uri=output_uri)
-    except DocumentAIServiceError as exc:
-        store.mark_parsing_failed(tender_id, error_message=str(exc))
+        session = store.get_session(tender_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    output_uri = session.parse.output_uri
+    if not output_uri:
+        raise HTTPException(status_code=404, detail="Playbook results are not available yet.")
+
+    if not output_uri.startswith("gs://"):
+        raise HTTPException(status_code=500, detail="Stored playbook URI is invalid.")
+
+    bucket, _, blob_name = output_uri[5:].partition("/")
+    if not bucket or not blob_name:
+        raise HTTPException(status_code=500, detail="Stored playbook URI is malformed.")
+
+    try:
+        raw = storage_service.download_text(bucket, blob_name)
+    except StorageServiceError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=500, detail=f"Stored playbook JSON is invalid: {exc}") from exc

@@ -63,5 +63,16 @@ class StorageService:
                 f"Failed to generate signed URL for {bucket_name}/{object_name}: {exc}"
             ) from exc
 
+    def download_text(self, bucket_name: str, object_name: str, encoding: str = "utf-8") -> str:
+        client = self._get_client()
+        try:
+            bucket = client.bucket(bucket_name)
+            blob = bucket.blob(object_name)
+            return blob.download_as_text(encoding=encoding)
+        except gcs_exceptions.GoogleCloudError as exc:
+            raise StorageServiceError(
+                f"Failed to download {bucket_name}/{object_name}: {exc}"
+            ) from exc
+
 
 storage_service = StorageService()

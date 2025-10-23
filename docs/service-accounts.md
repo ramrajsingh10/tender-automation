@@ -12,17 +12,12 @@ convention.
 
 | Cloud Run Service | Service Account | Primary IAM Roles (project scope unless noted) | Notes |
 | --- | --- | --- | --- |
-| `tender-backend` | `sa-backend@tender-automation-1008.iam.gserviceaccount.com` | `roles/datastore.user`, `roles/storage.objectAdmin`, `roles/documentai.apiUser` | Launches Document AI batch jobs and updates tender metadata. |
-| `ingest-api` | `sa-ingest@tender-automation-1008.iam.gserviceaccount.com` | `roles/datastore.user`, `roles/storage.objectViewer`, `roles/pubsub.publisher` | Consumes Document AI outputs, publishes pipeline triggers. Grant bucket-level `roles/storage.objectViewer` on `rawtenderdata` and `parsedtenderdata`. |
-| `pipeline-orchestrator` | `sa-orchestrator@tender-automation-1008.iam.gserviceaccount.com` | `roles/datastore.user` | Persists pipeline runs and calls downstream services via HTTPS. Attach additional `roles/run.invoker` grants to target services when enforcing IAM-based invocation. |
-| `extractor-deadlines` | `sa-extractor-deadlines@tender-automation-1008.iam.gserviceaccount.com` | `roles/datastore.user` | Writes deadline facts to Firestore. |
-| `extractor-emd` | `sa-extractor-emd@tender-automation-1008.iam.gserviceaccount.com` | `roles/datastore.user` | Writes earnest-money facts to Firestore. |
-| `extractor-requirements` | `sa-extractor-requirements@tender-automation-1008.iam.gserviceaccount.com` | `roles/datastore.user` | Writes requirements facts to Firestore. |
-| `extractor-penalties` | `sa-extractor-penalties@tender-automation-1008.iam.gserviceaccount.com` | `roles/datastore.user` | Writes penalties facts to Firestore. |
-| `extractor-annexures` | `sa-extractor-annexures@tender-automation-1008.iam.gserviceaccount.com` | `roles/datastore.user` | Locates annexure references and stores them in Firestore. |
-| `artifact-annexures` | `sa-artifact@tender-automation-1008.iam.gserviceaccount.com` | `roles/datastore.user`, `roles/storage.objectViewer`, `roles/drive.file` | Reads annexure payloads, fetches PDFs from Cloud Storage, and uploads Google Docs into the shared Drive folder. |
-| `rag-indexer` | `sa-rag@tender-automation-1008.iam.gserviceaccount.com` | `roles/datastore.user`, `roles/aiplatform.user`, `roles/aiplatform.indexAdmin` | Chunks documents, writes embeddings to Vertex AI Vector Search, and persists chunk metadata. |
-| `qa-loop` | `sa-qa-loop@tender-automation-1008.iam.gserviceaccount.com` | `roles/datastore.user` | Records QA acknowledgements and routing decisions. |
+| `tender-backend` | `sa-backend@tender-automation-1008.iam.gserviceaccount.com` | `roles/datastore.user`, `roles/storage.objectAdmin`, `roles/discoveryengine.user` | Serves the public API and proxies Vertex RAG queries to the orchestrator. |
+| `ingest-api` | `sa-ingest@tender-automation-1008.iam.gserviceaccount.com` | `roles/datastore.user`, `roles/storage.objectViewer`, `roles/pubsub.publisher`, `roles/discoveryengine.admin` | Receives uploads, manages tender ingestion metadata, and now imports files into the managed RAG corpus. Grant bucket-level `roles/storage.objectViewer` on `rawtenderdata` and `parsedtenderdata`. |
+| `orchestrator` | `sa-orchestrator@tender-automation-1008.iam.gserviceaccount.com` | `roles/datastore.user`, `roles/discoveryengine.user` | Persists pipeline runs and will fan out Agent Builder prompts once the new flow is wired. Attach additional `roles/run.invoker` grants to downstream services if IAM-protected. |
+| `tender-automation` (Firebase Hosting function) | Managed by Firebase | Firebase deploy process attaches the auto-generated `service-981270825391@gcp-sa-firebaseapphosting.iam.gserviceaccount.com`. | Handles SSR for the Next.js frontend. |
+
+Legacy extractor, artifact-builder, RAG indexer, and QA loop services have been retired. Their service accounts remain in IAM but can be disabled once we confirm no other workloads depend on them.
 
 Future Cloud Run workloads (for example checklist or baseline-plan generators)
 should follow the same pattern: create a dedicated `sa-<workload>` account,
@@ -34,9 +29,7 @@ grant only the roles required, and document the mapping here.
 PROJECT_ID=tender-automation-1008
 
 # Create accounts (no effect if they already exist)
-for SA in backend ingest orchestrator extractor-deadlines extractor-emd \
-          extractor-requirements extractor-penalties extractor-annexures \
-          artifact rag qa-loop; do
+for SA in backend ingest orchestrator; do
   gcloud iam service-accounts create "sa-${SA}" \
     --display-name "Tender ${SA//-/ } service account" \
     --project "${PROJECT_ID}"
@@ -48,22 +41,20 @@ resource-scoped roles (for example Cloud Storage or Pub/Sub). Example bindings:
 
 ```bash
 # Firestore access
-for SA in backend ingest orchestrator extractor-deadlines extractor-emd \
-          extractor-requirements extractor-penalties extractor-annexures \
-          artifact rag qa-loop; do
+for SA in backend ingest orchestrator; do
   gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
     --member="serviceAccount:sa-${SA}@${PROJECT_ID}.iam.gserviceaccount.com" \
     --role="roles/datastore.user"
 done
 
 # Storage access
-for SA in backend artifact; do
+for SA in backend; do
   gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
     --member="serviceAccount:sa-${SA}@${PROJECT_ID}.iam.gserviceaccount.com" \
     --role="roles/storage.objectAdmin"
 done
 
-for SA in ingest artifact; do
+for SA in ingest; do
   for BUCKET in rawtenderdata parsedtenderdata; do
     gcloud storage buckets add-iam-policy-binding "gs://${BUCKET}" \
       --member="serviceAccount:sa-${SA}@${PROJECT_ID}.iam.gserviceaccount.com" \
@@ -76,23 +67,21 @@ gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
   --member="serviceAccount:sa-ingest@${PROJECT_ID}.iam.gserviceaccount.com" \
   --role="roles/pubsub.publisher"
 
-# Document AI invocation
-gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-  --member="serviceAccount:sa-backend@${PROJECT_ID}.iam.gserviceaccount.com" \
-  --role="roles/documentai.apiUser"
-
 # Vertex AI access
-for ROLE in roles/aiplatform.user roles/aiplatform.indexAdmin; do
+gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
+  --member="serviceAccount:sa-ingest@${PROJECT_ID}.iam.gserviceaccount.com" \
+  --role="roles/discoveryengine.admin"
+
+for SA in backend orchestrator; do
   gcloud projects add-iam-policy-binding "${PROJECT_ID}" \
-    --member="serviceAccount:sa-rag@${PROJECT_ID}.iam.gserviceaccount.com" \
-    --role="${ROLE}"
+    --member="serviceAccount:sa-${SA}@${PROJECT_ID}.iam.gserviceaccount.com" \
+    --role="roles/discoveryengine.user"
 done
 
 # Capture the deployed Vertex AI resources so services can reference them.
-# Current production values:
-#   VERTEX_LOCATION=us-central1
-#   VERTEX_INDEX_ID=3454808470983802880        (display name: tender-rag-index)
-#   VERTEX_INDEX_ENDPOINT_ID=6462051937788362752 (display name: tender-rag-endpoint)
+# Current managed RAG corpus:
+#   VERTEX_RAG_CORPUS_PATH=projects/tender-automation-1008/locations/us-east4/ragCorpora/6917529027641081856
+#   VERTEX_RAG_EMBEDDING_MODEL=text-multilingual-embedding-002
 # Store them in Secret Manager or environment templates as appropriate.
 ```
 
@@ -113,15 +102,7 @@ REGION=us-central1
 declare -A SERVICES=(
   [tender-backend]=sa-backend
   [ingest-api]=sa-ingest
-  [pipeline-orchestrator]=sa-orchestrator
-  [extractor-deadlines]=sa-extractor-deadlines
-  [extractor-emd]=sa-extractor-emd
-  [extractor-requirements]=sa-extractor-requirements
-  [extractor-penalties]=sa-extractor-penalties
-  [extractor-annexures]=sa-extractor-annexures
-  [artifact-annexures]=sa-artifact
-  [rag-indexer]=sa-rag
-  [qa-loop]=sa-qa-loop
+  [orchestrator]=sa-orchestrator
 )
 
 for SERVICE in "${!SERVICES[@]}"; do

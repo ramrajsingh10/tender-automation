@@ -22,13 +22,6 @@ class StorageSettings:
 
 
 @dataclass(frozen=True)
-class DocumentAISettings:
-    project_id: str = os.environ.get("GCP_PROJECT_ID", "")
-    location: str = os.environ.get("DOCUMENT_AI_LOCATION", "us")
-    processor_id: str = os.environ.get("DOCUMENT_AI_PROCESSOR_ID", "")
-
-
-@dataclass(frozen=True)
 class APISettings:
     allowed_origins: tuple[str, ...] = tuple(
         origin.strip()
@@ -43,8 +36,14 @@ class StoreSettings:
     firestore_collection: str = os.environ.get("FIRESTORE_COLLECTION", "tenderSessions")
 
 
+@dataclass(frozen=True)
+class OrchestratorSettings:
+    base_url: str = os.environ.get("ORCHESTRATOR_BASE_URL", "")
+    rag_timeout_seconds: int = int(os.environ.get("RAG_CLIENT_TIMEOUT_SECONDS", "30"))
+
+
 upload_settings = UploadSettings()
 storage_settings = StorageSettings()
-document_ai_settings = DocumentAISettings()
 api_settings = APISettings()
 store_settings = StoreSettings()
+orchestrator_settings = OrchestratorSettings()

@@ -1,48 +1,16 @@
-﻿"use client";
+"use client";
 
-import { useEffect, useState } from "react";
-import { getTenderStatus, TenderSessionResponse } from "../../lib/tenderApi";
-
-interface TextAnchor {
-  page?: number | string;
-  snippet?: string;
-}
-
-interface Fact {
-  id: string;
-  factType: string;
-  payload: Record<string, unknown>;
-  confidence?: number;
-  status?: string;
-  decisionAt?: string;
-  decisionNotes?: string | null;
-  provenance?: { textAnchors: TextAnchor[] };
-}
-
-interface AnnexurePayload extends Record<string, unknown> {
-  name?: string;
-  pageRange?: {
-    start?: number | string;
-    end?: number | string;
-  };
-}
-
-interface Annexure {
-  id: string;
-  annexureType: string;
-  payload: AnnexurePayload;
-  confidence?: number;
-  status?: string;
-  decisionAt?: string;
-  decisionNotes?: string | null;
-  provenance?: { textAnchors: TextAnchor[] };
-}
-
-function getTenderIdFromSearch(searchParams: URLSearchParams): string | null {
-  return searchParams.get("tenderId");
-}
-
-let cachedBackendBaseUrl: string | null = null;
+import { useEffect, useMemo, useState } from "react";
+import {
+  getPlaybookResults,
+  getTenderStatus,
+  queryRag,
+  PlaybookRun,
+  RagQueryRequest,
+  RagQueryResponse,
+  TenderSessionResponse,
+  TenderStatus,
+} from "../../lib/tenderApi";
 
 type StepState = "pending" | "active" | "completed" | "failed";
 
@@ -79,67 +47,26 @@ function StatusStep({
   );
 }
 
-function getBackendBaseUrl(): string {
-  if (cachedBackendBaseUrl) {
-    return cachedBackendBaseUrl;
-  }
-
-  const candidates: Array<string | undefined> = [
-    process.env.NEXT_PUBLIC_TENDER_BACKEND_URL,
-    process.env.NEXT_PUBLIC_API_URL,
-    typeof window !== "undefined" ? window.location.origin : undefined,
-  ];
-  const resolved = candidates.find(
-    (value) => typeof value === "string" && value.trim().length > 0,
-  );
-  if (!resolved) {
-    throw new Error(
-      "Backend base URL is not configured. Set NEXT_PUBLIC_TENDER_BACKEND_URL or NEXT_PUBLIC_API_URL.",
-    );
-  }
-
-  cachedBackendBaseUrl = resolved.replace(/\/+$/, "");
-  return cachedBackendBaseUrl;
-}
-
-async function fetchJson<T>(
-  input: RequestInfo | URL,
-  init?: RequestInit,
-): Promise<T> {
-  const resolvedInput =
-    typeof input === "string" && input.startsWith("/")
-      ? `${getBackendBaseUrl()}${input}`
-      : input;
-
-  const response = await fetch(resolvedInput, init);
-  if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
-  }
-  return (await response.json()) as T;
+function getTenderIdFromSearch(searchParams: URLSearchParams): string | null {
+  return searchParams.get("tenderId");
 }
 
 export default function ValidationPage() {
-  const [facts, setFacts] = useState<Fact[]>([]);
-  const [annexures, setAnnexures] = useState<Annexure[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [isMutating, setIsMutating] = useState<string | null>(null);
   const [tenderId, setTenderId] = useState<string | null>(null);
-  const [isClientReady, setIsClientReady] = useState(false);
-  const [statusError, setStatusError] = useState<string | null>(null);
   const [tenderStatus, setTenderStatus] =
     useState<TenderSessionResponse | null>(null);
+  const [statusError, setStatusError] = useState<string | null>(null);
+  const [isStatusLoading, setIsStatusLoading] = useState(false);
 
-  const refreshData = async (id: string) => {
-    const [factRes, annexureRes] = await Promise.all([
-      fetchJson<{ items: Fact[] }>(`/api/dashboard/tenders/${id}/facts`),
-      fetchJson<{ items: Annexure[] }>(
-        `/api/dashboard/tenders/${id}/annexures`,
-      ),
-    ]);
-    setFacts(factRes.items);
-    setAnnexures(annexureRes.items);
-  };
+  const [playbookRun, setPlaybookRun] = useState<PlaybookRun | null>(null);
+  const [playbookError, setPlaybookError] = useState<string | null>(null);
+  const [isPlaybookLoading, setIsPlaybookLoading] = useState(false);
+
+  const [ragQuestion, setRagQuestion] = useState("");
+  const [ragResponse, setRagResponse] = useState<RagQueryResponse | null>(null);
+  const [isRagLoading, setIsRagLoading] = useState(false);
+  const [ragError, setRagError] = useState<string | null>(null);
+  const [isClientReady, setIsClientReady] = useState(false);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -150,95 +77,91 @@ export default function ValidationPage() {
     setIsClientReady(true);
   }, []);
 
-  useEffect(() => {
-    if (!tenderId) return;
-    setIsLoading(true);
-    setError(null);
-    void (async () => {
-      try {
-        await refreshData(tenderId);
-      } catch (err) {
-        setError((err as Error).message);
-      } finally {
-        setIsLoading(false);
-      }
-    })();
-  }, [tenderId]);
-
-  useEffect(() => {
-    if (!tenderId) return;
-
-    let isMounted = true;
-    let interval: ReturnType<typeof setInterval> | undefined;
-
-    const fetchStatus = async () => {
-      try {
-        const status = await getTenderStatus(tenderId);
-        if (!isMounted) return;
-        setTenderStatus(status);
-        setStatusError(null);
-        if (["parsed", "failed"].includes(status.status) && interval) {
-          clearInterval(interval);
-          interval = undefined;
-        }
-      } catch (err) {
-        if (!isMounted) return;
-        setStatusError((err as Error).message);
-      }
-    };
-
-    void fetchStatus();
-    interval = setInterval(fetchStatus, 8000);
-
-    return () => {
-      isMounted = false;
-      if (interval) {
-        clearInterval(interval);
-      }
-    };
-  }, [tenderId]);
-
-  const decideFact = async (
-    factId: string,
-    decision: "approved" | "rejected",
-  ) => {
-    if (!tenderId) return;
-    setIsMutating(`fact:${factId}`);
-    setError(null);
+  const loadStatus = async (id: string) => {
+    setIsStatusLoading(true);
+    setStatusError(null);
     try {
-      await fetchJson(`/api/dashboard/facts/${factId}/decision`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision }),
-      });
-      await refreshData(tenderId);
+      const data = await getTenderStatus(id);
+      setTenderStatus(data);
+      return data;
     } catch (err) {
-      setError((err as Error).message);
+      setStatusError((err as Error).message);
+      throw err;
     } finally {
-      setIsMutating(null);
+      setIsStatusLoading(false);
     }
   };
 
-  const decideAnnexure = async (
-    annexureId: string,
-    decision: "approved" | "rejected",
-  ) => {
-    if (!tenderId) return;
-    setIsMutating(`annexure:${annexureId}`);
-    setError(null);
+  const loadPlaybook = async (id: string) => {
+    setIsPlaybookLoading(true);
+    setPlaybookError(null);
     try {
-      await fetchJson(`/api/dashboard/annexures/${annexureId}/decision`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision }),
-      });
-      await refreshData(tenderId);
+      const run = await getPlaybookResults(id);
+      setPlaybookRun(run);
     } catch (err) {
-      setError((err as Error).message);
+      setPlaybookRun(null);
+      setPlaybookError((err as Error).message);
     } finally {
-      setIsMutating(null);
+      setIsPlaybookLoading(false);
     }
   };
+
+  useEffect(() => {
+    if (!tenderId) {
+      setTenderStatus(null);
+      setPlaybookRun(null);
+      return;
+    }
+    void loadStatus(tenderId);
+  }, [tenderId]);
+
+  useEffect(() => {
+    if (!tenderId) {
+      return;
+    }
+    if (tenderStatus?.parse?.outputUri) {
+      void loadPlaybook(tenderId);
+    } else {
+      setPlaybookRun(null);
+    }
+  }, [tenderId, tenderStatus?.parse?.outputUri]);
+
+  const statusState = tenderStatus?.status ?? ("uploading" as TenderStatus);
+
+  const handleRagQuery = async () => {
+    if (!tenderId) {
+      setRagError("Load a tender before querying the agent.");
+      return;
+    }
+    if (!ragQuestion.trim()) {
+      setRagError("Ask a question about the tender first.");
+      return;
+    }
+    setIsRagLoading(true);
+    setRagError(null);
+    try {
+      const request: RagQueryRequest = {
+        tenderId,
+        question: ragQuestion.trim(),
+      };
+      const response = await queryRag(request);
+      setRagResponse(response);
+    } catch (err) {
+      setRagResponse(null);
+      setRagError(err instanceof Error ? err.message : "Query failed.");
+    } finally {
+      setIsRagLoading(false);
+    }
+  };
+
+  const playbookGeneratedAt = useMemo(() => {
+    if (!playbookRun?.generatedAt) return null;
+    try {
+      return new Date(playbookRun.generatedAt).toLocaleString();
+    } catch {
+      return playbookRun.generatedAt;
+    }
+  }, [playbookRun]);
 
   return (
     <main className="mx-auto flex min-h-screen max-w-5xl flex-col gap-6 px-4 py-16">
@@ -266,216 +189,263 @@ export default function ValidationPage() {
           label="Uploads received"
           description="Tender documents have been uploaded to storage."
           state={
-            tenderStatus?.status && tenderStatus.status !== "uploading"
-              ? "completed"
-              : "active"
+            statusState && statusState !== "uploading" ? "completed" : "active"
           }
         />
         <StatusStep
-          label="Document AI parsing"
+          label="RAG import & agent pass"
           description={
-            tenderStatus?.status === "failed"
-              ? "Parsing failed. Review the tender in the intake page to retry."
-              : "Extracting structured data from your tender pack."
+            statusState === "failed"
+              ? "Processing failed. Review the tender in the intake page to retry."
+              : "Running the managed Vertex AI playbooks across the tender bundle."
           }
           state={
-            tenderStatus?.status === "failed"
+            statusState === "failed"
               ? "failed"
-              : tenderStatus?.status === "parsed"
+              : statusState === "parsed"
                 ? "completed"
-                : tenderStatus?.status === "uploading" || !tenderStatus
+                : statusState === "uploading" || !statusState
                   ? "pending"
                   : "active"
           }
         />
         <StatusStep
-          label="Extraction results"
+          label="Results ready for validation"
           description={
-            facts.length || annexures.length
-              ? "Facts and annexures are ready for review."
-              : tenderStatus?.status === "parsed"
-                ? "Waiting for extractor output… refresh shortly."
-                : "Results will appear once parsing completes."
+            playbookRun
+              ? "AI answers are ready to review below."
+              : statusState === "parsed"
+                ? "Waiting for Vertex AI playbook output… refresh shortly."
+                : "Results will appear once processing completes."
           }
           state={
-            tenderStatus?.status === "failed"
+            statusState === "failed"
               ? "failed"
-              : facts.length || annexures.length
+              : playbookRun
                 ? "completed"
-                : tenderStatus?.status === "parsed"
+                : statusState === "parsed"
                   ? "active"
                   : "pending"
           }
         />
+        <div className="flex items-center gap-3 text-xs text-muted-foreground">
+          <button
+            type="button"
+            onClick={() => tenderId && void loadStatus(tenderId)}
+            className="rounded-md border border-border bg-background px-3 py-1 text-xs font-medium text-foreground transition hover:bg-muted disabled:opacity-50"
+            disabled={!tenderId || isStatusLoading}
+          >
+            {isStatusLoading ? "Refreshing…" : "Refresh status"}
+          </button>
+          {tenderStatus?.parse?.outputUri ? (
+            <button
+              type="button"
+              onClick={() => tenderId && void loadPlaybook(tenderId)}
+              className="rounded-md border border-border bg-background px-3 py-1 text-xs font-medium text-foreground transition hover:bg-muted disabled:opacity-50"
+              disabled={!tenderId || isPlaybookLoading}
+            >
+              {isPlaybookLoading ? "Refreshing answers…" : "Refresh answers"}
+            </button>
+          ) : null}
+        </div>
         {statusError ? (
           <p className="text-xs text-destructive">{statusError}</p>
         ) : null}
       </section>
 
-      {error ? (
+      {playbookError ? (
         <div className="rounded border border-destructive/60 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          {error}
+          {playbookError}
         </div>
       ) : null}
 
-      {isLoading ? (
-        <p className="text-sm text-muted-foreground">Loading data…</p>
-      ) : null}
-
       <section className="rounded-lg border border-border bg-card p-6 shadow-sm">
-        <h2 className="text-lg font-medium">Extracted Facts</h2>
-        {facts.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No facts available yet.
-          </p>
-        ) : (
-          <ul className="mt-4 space-y-3">
-            {facts.map((fact) => (
-              <li
-                key={fact.id}
-                className="rounded border bg-background p-4 shadow-sm"
-              >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
-                    <p className="font-semibold">{fact.factType}</p>
-                    <p className="text-xs text-muted-foreground">
-                      Confidence: {(fact.confidence ?? 0).toFixed(2)}
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-medium">Ask the tender</h2>
+            <p className="text-sm text-muted-foreground">
+              Query the managed Vertex Agent Builder corpus for quick answers
+              about the uploaded documents.
+            </p>
+          </div>
+        </div>
+        <div className="mt-4 space-y-3">
+          <textarea
+            className="w-full min-h-[120px] rounded border border-input bg-background px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-primary/50"
+            placeholder="What is the submission deadline for this tender?"
+            value={ragQuestion}
+            onChange={(event) => setRagQuestion(event.target.value)}
+          />
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleRagQuery}
+              disabled={isRagLoading || !tenderId}
+              className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-60"
+            >
+              {isRagLoading ? "Asking…" : "Ask question"}
+            </button>
+            <p className="text-xs text-muted-foreground">
+              Results stream back directly from Vertex AI Search.
+            </p>
+          </div>
+          {ragError ? (
+            <p className="text-sm text-destructive">{ragError}</p>
+          ) : null}
+          {ragResponse?.answers?.length ? (
+            <div className="space-y-3">
+              {ragResponse.answers.map((answer, index) => (
+                <div
+                  key={index}
+                  className="rounded border bg-background p-4 text-sm text-foreground"
+                >
+                  <p className="whitespace-pre-line">{answer.text}</p>
+                  {answer.citations?.length ? (
+                    <details className="mt-3 text-xs text-muted-foreground">
+                      <summary className="cursor-pointer text-primary">
+                        View citations
+                      </summary>
+                      <pre className="mt-2 max-h-64 overflow-y-auto rounded bg-muted/60 p-2">
+                        {JSON.stringify(answer.citations, null, 2)}
+                      </pre>
+                    </details>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+          {ragResponse?.documents?.length ? (
+            <div className="space-y-2">
+              <h3 className="text-sm font-semibold text-foreground">
+                Top retrieved documents
+              </h3>
+              <ul className="space-y-2 text-sm text-muted-foreground">
+                {ragResponse.documents.map((doc, index) => (
+                  <li
+                    key={doc.id ?? index}
+                    className="rounded border bg-background/80 px-3 py-2"
+                  >
+                    <p className="font-medium text-foreground">
+                      {doc.title ?? doc.uri ?? `Result ${index + 1}`}
                     </p>
-                  </div>
-                  <div className="text-right">
-                    <span className="block text-xs uppercase tracking-wide text-muted-foreground">
-                      {fact.status ?? "pending"}
-                    </span>
-                    {fact.decisionAt ? (
-                      <span className="block text-[10px] text-muted-foreground">
-                        Decided {new Date(fact.decisionAt).toLocaleString()}
-                      </span>
+                    {doc.snippet ? (
+                      <p className="text-xs text-muted-foreground">
+                        {doc.snippet}
+                      </p>
                     ) : null}
-                  </div>
-                </div>
-                {fact.decisionNotes ? (
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    Notes: {fact.decisionNotes}
-                  </p>
-                ) : null}
-                <div className="mt-3 flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => decideFact(fact.id, "approved")}
-                    disabled={isMutating === `fact:${fact.id}`}
-                    className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white transition hover:bg-emerald-500 disabled:opacity-50"
-                  >
-                    Approve
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => decideFact(fact.id, "rejected")}
-                    disabled={isMutating === `fact:${fact.id}`}
-                    className="rounded-md bg-destructive px-3 py-1 text-xs font-medium text-destructive-foreground transition hover:bg-destructive/80 disabled:opacity-50"
-                  >
-                    Reject
-                  </button>
-                </div>
-                <pre className="mt-3 overflow-x-auto rounded bg-muted px-3 py-2 text-xs text-muted-foreground">
-                  {JSON.stringify(fact.payload, null, 2)}
-                </pre>
-                {fact.provenance?.textAnchors?.length ? (
-                  <div className="mt-3 rounded border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                    <p className="font-medium text-foreground">Provenance</p>
-                    <ul className="mt-2 list-inside space-y-1">
-                      {fact.provenance.textAnchors.map((anchor, index) => (
-                        <li key={index}>
-                          Page {anchor.page ?? "n/a"} —{" "}
-                          {anchor.snippet ?? "snippet unavailable"}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        )}
+                    {doc.uri ? (
+                      <a
+                        className="mt-1 inline-flex text-xs text-primary underline"
+                        href={doc.uri}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Open source
+                      </a>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
       </section>
 
       <section className="rounded-lg border border-border bg-card p-6 shadow-sm">
-        <h2 className="text-lg font-medium">Annexures</h2>
-        {annexures.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No annexure references found.
-          </p>
-        ) : (
-          <ul className="mt-4 space-y-3">
-            {annexures.map((annexure) => (
-              <li
-                key={annexure.id}
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <h2 className="text-lg font-medium">AI playbook answers</h2>
+            <p className="text-sm text-muted-foreground">
+              These results are generated automatically using the Vertex Agent
+              playbooks after each upload.
+            </p>
+          </div>
+          {playbookGeneratedAt ? (
+            <p className="text-xs text-muted-foreground">
+              Generated at {playbookGeneratedAt}
+            </p>
+          ) : null}
+        </div>
+        {isPlaybookLoading ? (
+          <p className="mt-4 text-sm text-muted-foreground">Loading answers…</p>
+        ) : playbookRun && playbookRun.results.length ? (
+          <div className="mt-4 space-y-4">
+            {playbookRun.results.map((result) => (
+              <div
+                key={result.questionId}
                 className="rounded border bg-background p-4 shadow-sm"
               >
-                <div className="flex flex-wrap items-center justify-between gap-2">
+                <header className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="font-semibold">
-                      {annexure.payload.name ?? annexure.annexureType}
+                    <p className="text-sm font-semibold text-foreground">
+                      {result.question}
                     </p>
-                    <p className="text-xs text-muted-foreground">
-                      Range:{" "}
-                      {annexure.payload.pageRange
-                        ? `Pages ${annexure.payload.pageRange.start}–${annexure.payload.pageRange.end}`
-                        : "N/A"}
+                    <p className="text-xs uppercase tracking-wide text-muted-foreground">
+                      {result.questionId}
                     </p>
                   </div>
-                  <div className="text-right">
-                    <span className="block text-xs uppercase tracking-wide text-muted-foreground">
-                      {annexure.status ?? "pending"}
-                    </span>
-                    {annexure.decisionAt ? (
-                      <span className="block text-[10px] text-muted-foreground">
-                        Decided {new Date(annexure.decisionAt).toLocaleString()}
-                      </span>
-                    ) : null}
+                </header>
+                {result.answers.length ? (
+                  <div className="mt-3 space-y-3 text-sm text-foreground">
+                    {result.answers.map((answer, index) => (
+                      <div key={index} className="space-y-2">
+                        <p className="whitespace-pre-line">{answer.text}</p>
+                        {answer.citations?.length ? (
+                          <details className="text-xs text-muted-foreground">
+                            <summary className="cursor-pointer text-primary">
+                              Citations
+                            </summary>
+                            <pre className="mt-2 max-h-48 overflow-y-auto rounded bg-muted/60 p-2">
+                              {JSON.stringify(answer.citations, null, 2)}
+                            </pre>
+                          </details>
+                        ) : null}
+                      </div>
+                    ))}
                   </div>
-                </div>
-                {annexure.decisionNotes ? (
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    Notes: {annexure.decisionNotes}
+                ) : (
+                  <p className="mt-3 text-sm text-muted-foreground">
+                    No answer returned for this prompt.
                   </p>
-                ) : null}
-                <div className="mt-3 flex gap-2">
-                  <button
-                    type="button"
-                    onClick={() => decideAnnexure(annexure.id, "approved")}
-                    disabled={isMutating === `annexure:${annexure.id}`}
-                    className="rounded-md bg-emerald-600 px-3 py-1 text-xs font-medium text-white transition hover:bg-emerald-500 disabled:opacity-50"
-                  >
-                    Approve
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => decideAnnexure(annexure.id, "rejected")}
-                    disabled={isMutating === `annexure:${annexure.id}`}
-                    className="rounded-md bg-destructive px-3 py-1 text-xs font-medium text-destructive-foreground transition hover:bg-destructive/80 disabled:opacity-50"
-                  >
-                    Reject
-                  </button>
-                </div>
-                <pre className="mt-3 overflow-x-auto rounded bg-muted px-3 py-2 text-xs text-muted-foreground">
-                  {JSON.stringify(annexure.payload, null, 2)}
-                </pre>
-                {annexure.provenance?.textAnchors?.length ? (
-                  <div className="mt-3 rounded border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
-                    <p className="font-medium text-foreground">Provenance</p>
-                    <ul className="mt-2 list-inside space-y-1">
-                      {annexure.provenance.textAnchors.map((anchor, index) => (
-                        <li key={index}>
-                          Page {anchor.page ?? "n/a"} —{" "}
-                          {anchor.snippet ?? "snippet unavailable"}
+                )}
+                {result.documents.length ? (
+                  <div className="mt-4 space-y-2">
+                    <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                      Top supporting documents
+                    </h4>
+                    <ul className="space-y-1 text-xs text-muted-foreground">
+                      {result.documents.map((doc, index) => (
+                        <li key={doc.id ?? index}>
+                          <span className="font-medium text-foreground">
+                            {doc.title ?? doc.uri ?? `Document ${index + 1}`}
+                          </span>
+                          {doc.uri ? (
+                            <>
+                              {" "}
+                              —{" "}
+                              <a
+                                href={doc.uri}
+                                className="text-primary underline"
+                                target="_blank"
+                                rel="noreferrer"
+                              >
+                                View
+                              </a>
+                            </>
+                          ) : null}
                         </li>
                       ))}
                     </ul>
                   </div>
                 ) : null}
-              </li>
+              </div>
             ))}
-          </ul>
+          </div>
+        ) : (
+          <p className="mt-4 text-sm text-muted-foreground">
+            No AI results available yet. Trigger processing from the intake page
+            once uploads are complete.
+          </p>
         )}
       </section>
     </main>

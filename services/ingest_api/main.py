@@ -5,6 +5,7 @@ import logging
 import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import re
 from typing import Any
 
 from cloudevents.http import from_http
@@ -14,6 +15,16 @@ from google.cloud import firestore, storage
 from google.cloud.firestore import Client as FirestoreClient
 from google.cloud.storage import Client as StorageClient
 from pydantic import BaseModel
+
+try:
+    from google.cloud import aiplatform  # type: ignore
+except ImportError:  # pragma: no cover - library may not be installed in local dev
+    aiplatform = None  # type: ignore[assignment]
+
+try:
+    from google.cloud import discoveryengine_v1beta  # type: ignore
+except ImportError:  # pragma: no cover - optional dependency
+    discoveryengine_v1beta = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -26,11 +37,20 @@ class Settings:
     ocr_jobs_collection: str = os.getenv("OCR_JOBS_COLLECTION", "ocrJobs")
     ocr_collection: str = os.getenv("OCR_COLLECTION", "ocrDocuments")
     tenders_collection: str = os.getenv("TENDERS_COLLECTION", "tenders")
+    rag_jobs_collection: str = os.getenv("RAG_INGEST_JOBS_COLLECTION", "ragIngestJobs")
+    vertex_rag_corpus_path: str = os.getenv("VERTEX_RAG_CORPUS_PATH", "")
+    vertex_rag_corpus_location: str = os.getenv("VERTEX_RAG_CORPUS_LOCATION", "")
+    vertex_rag_embedding_model: str = os.getenv("VERTEX_RAG_EMBEDDING_MODEL", "")
+    vertex_rag_data_store_id: str = os.getenv("VERTEX_RAG_DATA_STORE_ID", "")
+    vertex_rag_default_branch: str = os.getenv("VERTEX_RAG_DEFAULT_BRANCH", "")
+    vertex_rag_serving_config_path: str = os.getenv("VERTEX_RAG_SERVING_CONFIG_PATH", "")
 
 
 settings = Settings()
 _storage_client: StorageClient | None = None
 _firestore_client: FirestoreClient | None = None
+_rag_data_client: Any | None = None
+_document_service_client: Any | None = None
 
 
 class OCRProcessingError(RuntimeError):
@@ -156,6 +176,8 @@ def create_app() -> FastAPI:
             {"status": "stored", "storedAt": datetime.now(timezone.utc).isoformat()}
         )
 
+        _import_to_rag_corpus(tender_id, raw_uris, submitted_at=now)
+
         logger.info("Stored OCR payload for tender %s (job %s).", tender_id, job_ref.id)
         return {"status": "stored", "tenderId": tender_id, "ocrJobId": job_ref.id}
 
@@ -191,6 +213,56 @@ def create_app() -> FastAPI:
         return {"status": "ack", "tenderId": tender_id}
 
     return app
+
+
+def _get_rag_data_client() -> Any:
+    global _rag_data_client
+    if not settings.vertex_rag_corpus_path:
+        raise RuntimeError("Vertex RAG corpus path is not configured.")
+    if aiplatform is None:
+        raise RuntimeError(
+            "google-cloud-aiplatform is not installed. Add it to requirements.txt for ingest_api."
+        )
+    if _rag_data_client is not None:
+        return _rag_data_client
+    endpoint = (
+        f"{settings.vertex_rag_corpus_location}-aiplatform.googleapis.com"
+        if settings.vertex_rag_corpus_location
+        else None
+    )
+    client_options = {"api_endpoint": endpoint} if endpoint else None
+    _rag_data_client = aiplatform.gapic.VertexRagDataServiceClient(client_options=client_options)
+    return _rag_data_client
+
+
+def _extract_location_from_path(resource_path: str) -> str | None:
+    if not resource_path:
+        return None
+    match = re.search(r"/locations/([^/]+)/", resource_path)
+    if not match:
+        return None
+    location = match.group(1)
+    return location or None
+
+
+def _get_document_service_client() -> Any:
+    global _document_service_client
+    if discoveryengine_v1beta is None:
+        raise RuntimeError(
+            "google-cloud-discoveryengine is not installed. Add it to requirements.txt for ingest_api."
+        )
+    if _document_service_client is not None:
+        return _document_service_client
+    endpoint = None
+    location = (
+        _extract_location_from_path(settings.vertex_rag_default_branch)
+        or _extract_location_from_path(settings.vertex_rag_data_store_id)
+    )
+    if location and location != "global":
+        endpoint = f"{location}-discoveryengine.googleapis.com"
+    client_options = {"api_endpoint": endpoint} if endpoint else None
+    _document_service_client = discoveryengine_v1beta.DocumentServiceClient(client_options=client_options)
+    return _document_service_client
 
 
 def _extract_tender_id(object_name: str) -> str | None:
@@ -262,6 +334,157 @@ def _ensure_tender_stub(tender_id: str, timestamp: datetime) -> None:
         },
         merge=True,
     )
+
+
+def _record_rag_job(
+    *,
+    tender_id: str,
+    status: str,
+    submitted_at: datetime,
+    uris: list[str],
+    operation_name: str | None = None,
+    error: str | None = None,
+    target: str | None = None,
+) -> None:
+    firestore_client = get_firestore_client()
+    job_ref = firestore_client.collection(settings.rag_jobs_collection).document()
+    job_ref.set(
+        {
+            "tenderId": tender_id,
+            "status": status,
+            "operationName": operation_name,
+            "gcsUris": uris,
+            "submittedAt": submitted_at.isoformat(),
+            "error": error,
+            "target": target,
+        }
+    )
+
+
+def _import_to_rag_corpus(tender_id: str, raw_uris: list[str], *, submitted_at: datetime) -> None:
+    if not raw_uris:
+        logger.info("No raw URIs found for tender %s. Skipping RAG import.", tender_id)
+        return
+    if settings.vertex_rag_default_branch or settings.vertex_rag_data_store_id:
+        _import_to_data_store(tender_id, raw_uris, submitted_at=submitted_at)
+        return
+    if not settings.vertex_rag_corpus_path:
+        logger.debug(
+            "No RAG target configured; skipping import for tender %s. Set VERTEX_RAG_DEFAULT_BRANCH or VERTEX_RAG_CORPUS_PATH.",
+            tender_id,
+        )
+        return
+    try:
+        client = _get_rag_data_client()
+    except Exception as exc:  # pragma: no cover - protective
+        logger.error("Unable to initialize Vertex RAG client: %s", exc)
+        _record_rag_job(
+            tender_id=tender_id,
+            status="failed",
+            submitted_at=submitted_at,
+            uris=raw_uris,
+            error=str(exc),
+            target="corpus",
+        )
+        return
+
+    try:
+        operation = client.import_rag_files(
+            parent=settings.vertex_rag_corpus_path,
+            import_rag_files_config={"gcs_source": {"uris": raw_uris}},
+        )
+        operation_name = getattr(operation, "operation", getattr(operation, "_operation", None))
+        if hasattr(operation, "operation"):
+            operation_name = operation.operation.name
+        elif hasattr(operation, "result") and hasattr(operation.result, "name"):
+            operation_name = operation.result.name
+        operation_name = getattr(operation, "name", operation_name)
+        logger.info(
+            "Started Vertex RAG import for tender %s (operation=%s).",
+            tender_id,
+            operation_name,
+        )
+        _record_rag_job(
+            tender_id=tender_id,
+            status="pending",
+            submitted_at=submitted_at,
+            uris=raw_uris,
+            operation_name=str(operation_name) if operation_name else None,
+            target="corpus",
+        )
+    except Exception as exc:  # pragma: no cover - protective
+        logger.exception("Failed to import tender %s raw files into Vertex RAG.", tender_id)
+        _record_rag_job(
+            tender_id=tender_id,
+            status="failed",
+            submitted_at=submitted_at,
+            uris=raw_uris,
+            error=str(exc),
+            target="corpus",
+        )
+
+
+def _import_to_data_store(tender_id: str, raw_uris: list[str], *, submitted_at: datetime) -> None:
+    parent = settings.vertex_rag_default_branch or ""
+    if not parent and settings.vertex_rag_data_store_id:
+        parent = settings.vertex_rag_data_store_id.rstrip("/") + "/branches/default_branch"
+    if not parent:
+        logger.debug(
+            "Discovery Engine data store not configured; skipping import for tender %s.",
+            tender_id,
+        )
+        return
+
+    try:
+        client = _get_document_service_client()
+    except Exception as exc:  # pragma: no cover - protective
+        logger.error("Unable to initialize Discovery Engine client: %s", exc)
+        _record_rag_job(
+            tender_id=tender_id,
+            status="failed",
+            submitted_at=submitted_at,
+            uris=raw_uris,
+            error=str(exc),
+            target="dataStore",
+        )
+        return
+
+    try:
+        request = discoveryengine_v1beta.ImportDocumentsRequest(
+            parent=parent,
+            gcs_source=discoveryengine_v1beta.GcsSource(input_uris=raw_uris),
+            reconciliation_mode=discoveryengine_v1beta.ImportDocumentsRequest.ReconciliationMode.INCREMENTAL,
+        )
+        operation = client.import_documents(request=request)
+        operation_name = getattr(operation, "operation", getattr(operation, "_operation", None))
+        if hasattr(operation, "operation"):
+            operation_name = operation.operation.name
+        elif hasattr(operation, "result") and hasattr(operation.result, "name"):
+            operation_name = operation.result.name
+        operation_name = getattr(operation, "name", operation_name)
+        logger.info(
+            "Started Discovery Engine import for tender %s (operation=%s).",
+            tender_id,
+            operation_name,
+        )
+        _record_rag_job(
+            tender_id=tender_id,
+            status="pending",
+            submitted_at=submitted_at,
+            uris=raw_uris,
+            operation_name=str(operation_name) if operation_name else None,
+            target="dataStore",
+        )
+    except Exception as exc:  # pragma: no cover - protective
+        logger.exception("Failed to import tender %s into Discovery Engine.", tender_id)
+        _record_rag_job(
+            tender_id=tender_id,
+            status="failed",
+            submitted_at=submitted_at,
+            uris=raw_uris,
+            error=str(exc),
+            target="dataStore",
+        )
 
 
 app = create_app()

@@ -6,7 +6,7 @@ from google.cloud import aiplatform
 # --- Configuration (Hardcoded for PoC) ---
 PROJECT_ID = "tender-automation-1008"
 LOCATION = "us-east4"
-CORPUS_ID = "2305843009213693952"
+CORPUS_ID = "6917529027641081856"
 
 
 @functions_framework.cloud_event

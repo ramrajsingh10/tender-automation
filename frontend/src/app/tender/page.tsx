@@ -439,10 +439,10 @@ export default function TenderPage() {
             onChange={handleFileInput}
           />
         </label>
-        <p className="text-xs text-muted-foreground">
-          Files are streamed directly to secure Cloud Storage. Once everything
-          lands, we automatically fire the Document AI pipeline.
-        </p>
+          <p className="text-xs text-muted-foreground">
+            Files are streamed directly to secure Cloud Storage. Once everything
+            lands, we automatically run the Vertex AI playbook.
+          </p>
       </section>
 
       <section className="space-y-3">
@@ -524,10 +524,10 @@ export default function TenderPage() {
               state={statusState === "uploading" ? "active" : "completed"}
             />
             <StatusStep
-              label="Document AI parsing"
+              label="AI playbook processing"
               description={
                 statusState === "failed"
-                  ? "Parsing failed. Review the error and retry."
+                  ? "Processing failed. Review the error and retry."
                   : "Extracting structured data from your tender pack."
               }
               state={
@@ -557,13 +557,13 @@ export default function TenderPage() {
             />
           </div>
           <p>
-            {statusState === "parsing"
-              ? "Document AI parsing in progress. This may take a minute for large tenders."
-              : statusState === "parsed"
-                ? "Parsing complete! Head over to the validation workspace to review extracted data."
+              {statusState === "parsing"
+                ? "The managed Vertex AI playbook is running. This may take a minute for large tenders."
+                : statusState === "parsed"
+                  ? "Playbook complete! Head over to the validation workspace to review extracted data."
                 : statusState === "failed"
-                  ? `Parsing failed. ${parseInfo?.error ?? "Try re-running the process once issues are resolved."}`
-                  : "Waiting for uploads to finish. Parsing will start automatically when all files are uploaded."}
+                  ? `Processing failed. ${parseInfo?.error ?? "Try re-running the process once issues are resolved."}`
+                  : "Waiting for uploads to finish. Processing will start automatically when all files are uploaded."}
           </p>
 
           {session?.status === "uploaded" && !parsingRequested ? (
@@ -573,7 +573,7 @@ export default function TenderPage() {
               className="mt-1 inline-flex items-center justify-center rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-60"
               disabled={isProcessing}
             >
-              {isProcessing ? "Starting..." : "Start parsing now"}
+              {isProcessing ? "Starting..." : "Start processing now"}
             </button>
           ) : null}
 
@@ -584,7 +584,7 @@ export default function TenderPage() {
               className="inline-flex items-center justify-center rounded-md border border-destructive px-3 py-2 text-xs font-medium text-destructive transition hover:bg-destructive/10 disabled:opacity-60"
               disabled={isProcessing}
             >
-              Retry parsing
+              Retry processing
             </button>
           ) : null}
 
@@ -623,7 +623,7 @@ export default function TenderPage() {
         </p>
         {isReadyForValidation ? (
           <p className="mt-2">
-            Parsing complete. Review the extracted data on the{" "}
+            Processing complete. Review the extracted data on the{" "}
             <a
               className="text-primary underline"
               href={`/valid?tenderId=${tenderId ?? ""}`}

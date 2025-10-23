@@ -4,7 +4,7 @@ This repository hosts the Tender Automation frontend, backend services, and auto
 
 ## Directory Layout
 - frontend  Next.js 15 application and supporting assets.
-- services/  FastAPI services deployed to Cloud Run (ingest_api, orchestrator, extractors, artifact-builder, rag-indexer, qa_loop).
+- services/  FastAPI services deployed to Cloud Run (ingest_api, orchestrator, artifact-builder (legacy), qa_loop (placeholder), rag-trigger-poc).
 - agents/  Placeholder for background agents (e.g., agents/ingestion).
 - docs/  Repository policies and operating procedures (codex-context.md, codex-plan_mode.md).
 - .vscode/  Task definitions for local workflows, Cloud Run deployments, and Python testing.
@@ -38,6 +38,9 @@ uvicorn main:app --app-dir services/<service-name> --reload
 
 Deploy the services to Cloud Run with the provided VS Code tasks or by running the `gcloud run deploy` commands defined in `.vscode/tasks.json`.
 
+- Tender processing: `POST /api/tenders/{tenderId}/process` imports the uploaded bundle into Vertex RAG, runs the managed playbook, and writes the results JSON to Cloud Storage. Retrieve the latest answers via `GET /api/tenders/{tenderId}/playbook`.
+- Ad-hoc questions: `POST /api/rag/query` proxies a single prompt to Agent Builder for exploration or validation.
+
 ## Testing
 - Web lint/build checks: `npm run frontend:lint` and `npm run frontend:build`.
 - Python service smoke tests (from a virtual environment):
@@ -50,9 +53,9 @@ Deploy the services to Cloud Run with the provided VS Code tasks or by running t
 ## Agents
 agents/ contains scaffolding for future worker-style automation. Add one subdirectory per agent, document runtime requirements, and supply env templates (.env.example) alongside the code.
 
-## OCR + RAG Roadmap
-We are transitioning to an OCR-first pipeline that feeds a RAG index and AI agents.  
-Implementation details, phased rollout, and open questions live in [`docs/NewApproach.md`](docs/NewApproach.md).
+## Managed RAG Roadmap
+We now rely on Vertex AI Agent Builder for document ingestion and retrieval.  
+High-level plans, phased rollout, and open questions live in [`docs/NewApproach.md`](docs/NewApproach.md).
 
 ## Deployment
 - **Frontend**: firebase.json points Hosting to frontend and deploys the framework build artifact in frontend/.next. Run `npm run frontend:build` before firebase deploy --only hosting.
@@ -60,8 +63,12 @@ Implementation details, phased rollout, and open questions live in [`docs/NewApp
 - **Services**: Use the gcloud tasks in .vscode/tasks.json or replicate the commands in CI/CD to deploy each FastAPI service to Cloud Run (us-central1).
 - **Service accounts**: Follow [`docs/service-accounts.md`](docs/service-accounts.md) when assigning IAM and attaching service accounts to Cloud Run services.
 - **Google Drive**: Set `GOOGLE_DRIVE_PARENT_FOLDER_ID=0AIIJEYSn69gTUk9PVA` (Tenders shared drive) for the artifact builder service; Secret Manager usage is outlined in `services/artifact-builder/README.md`.
-- **Vertex AI**: Provide the rag indexer with `VERTEX_LOCATION=us-central1`, `VERTEX_INDEX_ID=3454808470983802880`, and `VERTEX_INDEX_ENDPOINT_ID=6462051937788362752` (matching the tender-rag-index deployment).
+- **Vertex AI (Agent Builder)**: Ensure service accounts have `discoveryengine.admin` and `discoveryengine.user` roles for document ingestion and query access. Enable `discoveryengine.googleapis.com`, capture the data store ID for `VERTEX_RAG_DATA_STORE_ID`, and watch the `text-multilingual-embedding-002` quota (`online_prediction_requests_per_base_model`).
+- **Backend ↔ Orchestrator**: Set `ORCHESTRATOR_BASE_URL` so the tender backend can forward `/api/rag/query` requests to the orchestrator proxy.
 
 ## Additional Documentation
 - docs/codex-context.md outlines collaboration and workflow expectations.
 - docs/codex-plan_mode.md captures the Plan Mode operating instructions for Codex.
+- docs/NewApproach.md documents the managed Vertex RAG pipeline.
+- docs/OldApproach.md archives the legacy DocAI + custom RAG workflow and issues we
+  encountered along the way.

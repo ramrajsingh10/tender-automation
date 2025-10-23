@@ -6,14 +6,14 @@
 
 ## Repository Overview
 - `frontend/` - Next.js 15 application deployed to Firebase Hosting.
-- `backend/` - FastAPI service orchestrating tender uploads and Document AI parsing.
-- `services/` - Cloud Run services (ingest_api, orchestrator, extractors, artifact-builder, rag-indexer, qa_loop).
+- `backend/` - FastAPI service orchestrating tender uploads and managed Vertex RAG playbooks.
+- `services/` - Cloud Run services (ingest_api, orchestrator, artifact-builder (legacy), qa_loop placeholder, rag-trigger-poc).
 - `agents/` - Workspace for background automation (currently a placeholder).
 - `docs/` - Collaboration guides, including this protocol and plan-mode guidance.
 
 ## Tech Stack & Tooling
 - Frontend: Next.js 15, React 19, Tailwind CSS, TypeScript.
-- Backend & services: Python 3.12, FastAPI, Google Cloud Storage, Document AI clients.
+- Backend & services: Python 3.12, FastAPI, Google Cloud Storage, Vertex AI Agent Builder (Discovery Engine + Rag Data).
 - Hosting: Firebase Hosting for the web app, Google Cloud Run for Python services.
 - Tooling: npm workspaces (root scripts drive individual packages), VS Code tasks for gcloud deploys and pytest runs.
 
