@@ -365,14 +365,18 @@ def _import_to_rag_corpus(tender_id: str, raw_uris: list[str], *, submitted_at: 
     if not raw_uris:
         logger.info("No raw URIs found for tender %s. Skipping RAG import.", tender_id)
         return
+
+    imported_to_data_store = False
     if settings.vertex_rag_default_branch or settings.vertex_rag_data_store_id:
         _import_to_data_store(tender_id, raw_uris, submitted_at=submitted_at)
-        return
+        imported_to_data_store = True
+
     if not settings.vertex_rag_corpus_path:
-        logger.debug(
-            "No RAG target configured; skipping import for tender %s. Set VERTEX_RAG_DEFAULT_BRANCH or VERTEX_RAG_CORPUS_PATH.",
-            tender_id,
-        )
+        if not imported_to_data_store:
+            logger.debug(
+                "No RAG target configured; skipping import for tender %s. Set VERTEX_RAG_DEFAULT_BRANCH or VERTEX_RAG_CORPUS_PATH.",
+                tender_id,
+            )
         return
     try:
         client = _get_rag_data_client()
@@ -470,6 +474,21 @@ def _import_to_data_store(tender_id: str, raw_uris: list[str], *, submitted_at: 
         _record_rag_job(
             tender_id=tender_id,
             status="pending",
+            submitted_at=submitted_at,
+            uris=raw_uris,
+            operation_name=str(operation_name) if operation_name else None,
+            target="dataStore",
+        )
+        # Block until the import completes so downstream RAG queries see fresh content.
+        result = operation.result()
+        logger.info(
+            "Completed Discovery Engine import for tender %s (operation=%s).",
+            tender_id,
+            getattr(result, "name", operation_name),
+        )
+        _record_rag_job(
+            tender_id=tender_id,
+            status="succeeded",
             submitted_at=submitted_at,
             uris=raw_uris,
             operation_name=str(operation_name) if operation_name else None,

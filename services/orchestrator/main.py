@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -79,28 +80,12 @@ _storage_client: storage.Client | None = None
 
 DEFAULT_PLAYBOOK = [
     {
-        "id": "overview",
-        "question": "Provide a concise summary of this tender, highlighting the procuring entity, objective, and key deliverables.",
+        "id": "document_id",
+        "question": "Extract the document identifier (tender ID / RFP ID / reference number) exactly as stated in the tender pack.",
     },
     {
-        "id": "submission_deadline",
-        "question": "What is the submission deadline for this tender? Include date and time if specified.",
-    },
-    {
-        "id": "emd_amount",
-        "question": "What is the Earnest Money Deposit (EMD) amount required? Specify the currency and any payment notes.",
-    },
-    {
-        "id": "prebid_meeting",
-        "question": "Is there a pre-bid meeting? Provide the scheduled date, time, and location if available.",
-    },
-    {
-        "id": "penalties",
-        "question": "Summarize any penalty or liquidated damages clauses mentioned in the tender.",
-    },
-    {
-        "id": "technical_requirements",
-        "question": "List the key technical or eligibility requirements for bidders.",
+        "id": "submission_deadlines",
+        "question": "List every submission-related deadline (bid submission, pre-bid queries, fee payments, etc.) with dates and times if available.",
     },
 ]
 
@@ -620,12 +605,16 @@ def _execute_vertex_search(request: RagQueryRequest) -> RagQueryResponse:
     answers: List[RagAnswer] = []
     if summary and summary.summary_text:
         citations: List[RagCitation] = []
-        for meta in summary.summary_with_metadata:
-            meta_dict = MessageToDict(meta, preserving_proto_field_name=True)
-            citation_meta = meta_dict.get("citationMetadata", {})
-            references = meta_dict.get("references", [])
-            for citation_entry in citation_meta.get("citations", []):
-                sources: List[Dict[str, Any]] = []
+        metadata_entries = getattr(summary, "summary_with_metadata", None)
+        if metadata_entries:
+            if not isinstance(metadata_entries, Iterable) or isinstance(metadata_entries, (str, bytes)):
+                metadata_entries = [metadata_entries]
+            for meta in metadata_entries:
+                meta_dict = MessageToDict(meta, preserving_proto_field_name=True)
+                citation_meta = meta_dict.get("citationMetadata", {})
+                references = meta_dict.get("references", [])
+                for citation_entry in citation_meta.get("citations", []):
+                    sources: List[Dict[str, Any]] = []
                 for source in citation_entry.get("sources", []):
                     ref_index = source.get("referenceIndex")
                     ref_payload = references[ref_index] if isinstance(ref_index, int) and ref_index < len(references) else {}

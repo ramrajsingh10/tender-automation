@@ -22,6 +22,7 @@ def _build_upload_limits() -> schemas.UploadLimits:
     )
 
 
+@router.post("", response_model=schemas.CreateTenderResponse, status_code=201)
 @router.post("/", response_model=schemas.CreateTenderResponse, status_code=201)
 def create_tender_session(
     request: schemas.CreateTenderRequest | None = None,

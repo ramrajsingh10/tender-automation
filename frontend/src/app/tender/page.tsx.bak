@@ -600,6 +600,22 @@ export default function TenderPage() {
         </div>
       </section>
 
+      <section className="space-y-2 text-sm text-muted-foreground">
+        <p>Next steps:</p>
+        <ul className="list-disc space-y-1 pl-5">
+          <li>
+            Monitor the validation queue on the{" "}
+            <a className="text-primary underline" href="/valid">
+              validation workspace
+            </a>
+            .
+          </li>
+          <li>
+            Ensure extracted artefacts look correct before the submission
+            deadline.
+          </li>
+        </ul>
+      </section>
 
       <footer className="border-t pt-4 text-xs text-muted-foreground">
         <p>

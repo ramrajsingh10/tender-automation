@@ -90,6 +90,7 @@ For small uploads (≤10 MB) you can fall back to `FileServiceClient.upload_file
 ### 1.2 Application layer
 - Build `/api/rag/query` to proxy requests to Agent Builder, store question/answer pairs in Firestore (`ragQueries/{id}`), and return answers plus citations to the UI.
 - Use `/rag/playbook` on the orchestrator to import the uploaded bundle, run a curated question set, and write JSON answers to `gs://{PARSED_TENDER_BUCKET}/{tenderId}/rag/results-*.json` for the dashboard to consume.
+  - Current playbook prompts (kept under the service quota ceiling) ask the agent to 1) return the document/RFP identifier verbatim and 2) enumerate every submission-related deadline (bid submission, fees, pre-bid queries).
 - The validation dashboard, annexure viewer, etc., continue to read from Firestore - the only change is how data is produced.
 
 ### 1.3 Quota & throttling
