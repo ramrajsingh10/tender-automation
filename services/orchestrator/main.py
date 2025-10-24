@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import asyncio
 import base64
 import json
@@ -9,8 +8,7 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
-
+from typing import Any, Dict, List, Optional, Tuple
 import httpx
 from fastapi import FastAPI, HTTPException, Request, status
 from google.auth import exceptions as auth_exceptions
@@ -18,18 +16,14 @@ from google.cloud import firestore, storage
 from google.cloud.firestore import Client as FirestoreClient
 from google.protobuf.json_format import MessageToDict
 from pydantic import BaseModel, Field
-
+import vertexai
+from vertexai.preview.generative_models import GenerativeModel, GenerationConfig
 from pipeline import DEFAULT_PIPELINE, Task, build_pipeline_run_document
-
 try:
-    from google.cloud import discoveryengine_v1beta, aiplatform_v1beta1  # type: ignore
+    from google.cloud import aiplatform_v1beta1  # type: ignore
 except ImportError:  # pragma: no cover - optional dependency
-    discoveryengine_v1beta = None  # type: ignore[assignment]
     aiplatform_v1beta1 = None  # type: ignore[assignment]
-
 logger = logging.getLogger(__name__)
-
-
 def _load_service_map() -> dict[str, str]:
     """Compile service endpoint overrides from environment variables."""
     base_map = {
@@ -52,8 +46,6 @@ def _load_service_map() -> dict[str, str]:
         except json.JSONDecodeError:
             logger.warning("Invalid SERVICE_ENDPOINTS_JSON payload; ignoring.")
     return {key: value for key, value in base_map.items() if value}
-
-
 @dataclass(frozen=True)
 class Settings:
     project_id: str = os.getenv("GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT", "")
@@ -67,17 +59,15 @@ class Settings:
     vertex_rag_serving_config_id: str = os.getenv("VERTEX_RAG_SERVING_CONFIG_ID", "default_serving_config")
     vertex_rag_serving_config_path: str = os.getenv("VERTEX_RAG_SERVING_CONFIG_PATH", "")
     vertex_rag_default_branch: str = os.getenv("VERTEX_RAG_DEFAULT_BRANCH", "")
+    vertex_rag_generative_model: str = os.getenv("VERTEX_RAG_GEMINI_MODEL", "gemini-2.5-flash")
     raw_bucket: str = os.getenv("RAW_TENDER_BUCKET", "rawtenderdata")
     parsed_bucket: str = os.getenv("PARSED_TENDER_BUCKET", "parsedtenderdata")
-
-
 settings = Settings(service_map=_load_service_map())
 _firestore_client: FirestoreClient | None = None
-_search_client: Any | None = None
 _rag_data_client: Any | None = None
 _storage_client: storage.Client | None = None
-
-
+_rag_service_client: Any | None = None
+_vertexai_init_context: Optional[Tuple[str, str]] = None
 DEFAULT_PLAYBOOK = [
     {
         "id": "document_id",
@@ -88,41 +78,31 @@ DEFAULT_PLAYBOOK = [
         "question": "List every submission-related deadline (bid submission, pre-bid queries, fee payments, etc.) with dates and times if available.",
     },
 ]
-
-
 class PlaybookQuestion(BaseModel):
     id: str
     question: str
-
-
 class RagPlaybookRequest(BaseModel):
     tenderId: str
     gcsUris: List[str]
     questions: Optional[List[PlaybookQuestion]] = None
     forgetAfterRun: bool = True
     pageSize: int | None = None
-
     class Config:
         populate_by_name = True
-
-
 class RagPlaybookResult(BaseModel):
     questionId: str
     question: str
     answers: List["RagAnswer"]
     documents: List["RagDocument"]
-
-
 class RagPlaybookResponse(BaseModel):
     results: List[RagPlaybookResult]
     outputUri: Optional[str] = None
-
-
 class RagQueryRequest(BaseModel):
     tenderId: str
     question: str
     conversationId: str | None = None
     pageSize: int | None = None
+    ragFileIds: List[str] | None = None
 
     class Config:
         populate_by_name = True
@@ -164,8 +144,6 @@ def get_firestore_client() -> FirestoreClient:
             "FIRESTORE_EMULATOR_HOST before starting the orchestrator service."
         ) from exc
     return _firestore_client
-
-
 def _get_storage_client() -> storage.Client:
     global _storage_client
     if _storage_client is not None:
@@ -178,8 +156,6 @@ def _get_storage_client() -> storage.Client:
             "or STORAGE_EMULATOR_HOST before starting the orchestrator service."
         ) from exc
     return _storage_client
-
-
 def _extract_location_from_path(resource_path: str) -> str | None:
     if not resource_path:
         return None
@@ -188,8 +164,18 @@ def _extract_location_from_path(resource_path: str) -> str | None:
         return None
     location = match.group(1)
     return location or None
-
-
+def _extract_project_from_resource(resource_path: str) -> str | None:
+    if not resource_path:
+        return None
+    match = re.search(r"projects/([^/]+)/", resource_path)
+    if not match:
+        return None
+    return match.group(1)
+def _ensure_vertexai_initialized(project_id: str, location: str) -> None:
+    global _vertexai_init_context
+    if _vertexai_init_context != (project_id, location):
+        vertexai.init(project=project_id, location=location)
+        _vertexai_init_context = (project_id, location)
 def _get_rag_data_client():
     global _rag_data_client
     if aiplatform_v1beta1 is None:
@@ -205,12 +191,69 @@ def _get_rag_data_client():
         client_options = {"api_endpoint": f"{settings.vertex_rag_location}-aiplatform.googleapis.com"}
     _rag_data_client = aiplatform_v1beta1.VertexRagDataServiceClient(client_options=client_options)
     return _rag_data_client
-
-
+def _get_rag_service_client():
+    global _rag_service_client
+    if aiplatform_v1beta1 is None:
+        raise RuntimeError(
+            "google-cloud-aiplatform is not installed. Add it to services/orchestrator/requirements.txt."
+        )
+    if _rag_service_client is not None:
+        return _rag_service_client
+    endpoint = None
+    if settings.vertex_rag_location:
+        endpoint = f"{settings.vertex_rag_location}-aiplatform.googleapis.com"
+    client_options = {"api_endpoint": endpoint} if endpoint else None
+    _rag_service_client = aiplatform_v1beta1.VertexRagServiceClient(client_options=client_options)
+    return _rag_service_client
+def _run_generative_agent(
+    project_id: str, location: str, question: str, contexts: List[Any]
+) -> tuple[str, Optional[str]]:
+    _ensure_vertexai_initialized(project_id, location)
+    model_id = settings.vertex_rag_generative_model or "gemini-2.5-flash"
+    model = GenerativeModel(model_id)
+    if contexts:
+        context_sections = []
+        for idx, ctx in enumerate(contexts, start=1):
+            ctx_text = getattr(ctx, "text", "") or ""
+            source = getattr(ctx, "source_uri", "") or ""
+            if ctx_text:
+                context_sections.append(f"[Source {idx}] URI: {source}\n{ctx_text}")
+        prompt_context = "\n\n".join(context_sections)
+    else:
+        prompt_context = "(no context)"
+    instruction = (
+        "Return the exact text span from the context that answers the question. "
+        "Do not paraphrase or summarize. If no relevant span is present, respond with NOT_FOUND."
+    )
+    user_prompt = f"{instruction}\n\nQuestion:\n{question}\n\nContext:\n{prompt_context}"
+    try:
+        response = model.generate_content(
+            user_prompt,
+            generation_config=GenerationConfig(temperature=0.0, max_output_tokens=256),
+        )
+        answer_text = (getattr(response, "text", "") or "").strip()
+    except Exception as exc:  # pragma: no cover - generative call failed
+        logger.warning("Gemini extraction failed: %s", exc)
+        answer_text = ""
+    if not answer_text or answer_text.upper() == "NOT_FOUND":
+        return "", None
+    answer_lower = answer_text.lower()
+    matched_source: Optional[str] = None
+    for ctx in contexts:
+        ctx_text = (getattr(ctx, "text", "") or "").lower()
+        if answer_lower in ctx_text:
+            matched_source = getattr(ctx, "source_uri", "") or None
+            if matched_source:
+                break
+    if not matched_source:
+        for ctx in contexts:
+            src = getattr(ctx, "source_uri", "") or None
+            if src:
+                matched_source = src
+                break
+    return answer_text, matched_source
 def _service_endpoint(task_target: str) -> str | None:
     return (settings.service_map or {}).get(task_target)
-
-
 def _map_rag_files_by_uri() -> Dict[str, str]:
     if not settings.vertex_rag_corpus_path:
         return {}
@@ -222,8 +265,6 @@ def _map_rag_files_by_uri() -> Dict[str, str]:
         if uri:
             mapping[uri] = rag_file.name
     return mapping
-
-
 def _import_rag_files(gcs_uris: List[str]) -> List[str]:
     if not gcs_uris:
         return []
@@ -242,8 +283,6 @@ def _import_rag_files(gcs_uris: List[str]) -> List[str]:
         if name and before.get(uri) != name:
             created.append(name)
     return created
-
-
 def _delete_rag_files(rag_file_names: List[str]) -> None:
     if not rag_file_names:
         return
@@ -253,8 +292,6 @@ def _delete_rag_files(rag_file_names: List[str]) -> None:
             client.delete_rag_file(name=name)
         except Exception as exc:  # pragma: no cover - best effort cleanup
             logger.warning("Failed to delete rag file %s: %s", name, exc)
-
-
 def _write_results_to_gcs(tender_id: str, payload: Dict[str, Any]) -> str:
     client = _get_storage_client()
     bucket = client.bucket(settings.parsed_bucket)
@@ -267,14 +304,10 @@ def _write_results_to_gcs(tender_id: str, payload: Dict[str, Any]) -> str:
         content_type="application/json",
     )
     return f"gs://{settings.parsed_bucket}/{object_name}"
-
-
 def _resolve_playbook_questions(questions: Optional[List[PlaybookQuestion]]) -> List[PlaybookQuestion]:
     if questions:
         return questions
     return [PlaybookQuestion(**item) for item in DEFAULT_PLAYBOOK]
-
-
 def _run_playbook(request: RagPlaybookRequest) -> RagPlaybookResponse:
     questions = _resolve_playbook_questions(request.questions)
     rag_files: List[str] = []
@@ -299,6 +332,7 @@ def _run_playbook(request: RagPlaybookRequest) -> RagPlaybookResponse:
                 tenderId=request.tenderId,
                 question=question.question,
                 pageSize=request.pageSize,
+                ragFileIds=rag_files or None,
             )
         )
         results.append(
@@ -323,24 +357,21 @@ def _run_playbook(request: RagPlaybookRequest) -> RagPlaybookResponse:
             ]
         _delete_rag_files([name for name in rag_files if name])
     return RagPlaybookResponse(results=results, outputUri=output_uri)
-
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Tender Pipeline Orchestrator",
         description="Coordinates extraction, QA, and artifact generation tasks.",
         version="0.1.0",
     )
-
     @app.get("/healthz", tags=["meta"])
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
-
     @app.post("/rag/query", tags=["rag"])
     async def rag_query(request: RagQueryRequest) -> RagQueryResponse:
-        if not settings.vertex_rag_data_store_id:
+        if not settings.vertex_rag_corpus_path:
             raise HTTPException(
                 status_code=503,
-                detail="Vertex Agent Builder serving config is not configured. Set VERTEX_RAG_DATA_STORE_ID.",
+                detail="Vertex RAG corpus is not configured. Set VERTEX_RAG_CORPUS_PATH.",
             )
         try:
             payload = _execute_vertex_search(request)
@@ -348,7 +379,6 @@ def create_app() -> FastAPI:
             logger.exception("RAG query failed for tender %s.", request.tenderId)
             raise HTTPException(status_code=502, detail=f"Vertex Agent Builder query failed: {exc}") from exc
         return payload
-
     @app.post("/rag/playbook", tags=["rag"])
     async def rag_playbook(request: RagPlaybookRequest) -> RagPlaybookResponse:
         if not request.gcsUris:
@@ -359,25 +389,21 @@ def create_app() -> FastAPI:
             logger.exception("Playbook execution failed for tender %s.", request.tenderId)
             raise HTTPException(status_code=502, detail=f"Failed to run playbook: {exc}") from exc
         return response
-
     @app.post("/pubsub/pipeline-trigger", status_code=status.HTTP_202_ACCEPTED)
     async def handle_pubsub(request: Request) -> dict[str, Any]:
         payload = await request.json()
         message = payload.get("message")
         if not message or "data" not in message:
             raise HTTPException(status_code=400, detail="Invalid Pub/Sub message payload.")
-
         try:
             data_bytes = base64.b64decode(message["data"])
             trigger_payload = json.loads(data_bytes)
         except (ValueError, json.JSONDecodeError) as exc:
             raise HTTPException(status_code=400, detail="Failed to decode Pub/Sub message.") from exc
-
         tender_id = trigger_payload.get("tenderId")
         ingest_job_id = trigger_payload.get("ingestJobId")
         if not tender_id or not ingest_job_id:
             raise HTTPException(status_code=400, detail="Missing tenderId or ingestJobId in message.")
-
         run_id = datetime.now(timezone.utc).isoformat()
         run_document = build_pipeline_run_document(
             definition=DEFAULT_PIPELINE,
@@ -386,7 +412,6 @@ def create_app() -> FastAPI:
             trigger=trigger_payload.get("trigger", "ingest"),
             ingest_job_id=ingest_job_id,
         )
-
         firestore_client = get_firestore_client()
         pipeline_doc = firestore_client.collection(settings.pipeline_collection).document(tender_id)
         now = datetime.now(timezone.utc).isoformat()
@@ -400,23 +425,15 @@ def create_app() -> FastAPI:
         )
         run_ref = pipeline_doc.collection("runs").document(run_id)
         run_ref.set(run_document)
-
         firestore_client.collection(settings.tenders_collection).document(tender_id).set(
             {"tenderId": tender_id, "pipelineRunId": run_id, "lastUpdated": now},
             merge=True,
         )
-
         await _execute_pipeline(firestore_client, run_ref, run_document)
-
         logger.info("Queued pipeline run %s for tender %s.", run_id, tender_id)
         return {"status": "queued", "tenderId": tender_id, "runId": run_id}
-
     return app
-
-
 app = create_app()
-
-
 async def _execute_pipeline(
     firestore_client: FirestoreClient,
     run_ref: firestore.DocumentReference,
@@ -434,32 +451,24 @@ async def _execute_pipeline(
             }
         )
         return
-
     tasks_state = run_document["tasks"]
     current_stage = run_document["currentStage"]
     grouped = DEFAULT_PIPELINE.grouped_tasks
-
     while current_stage in grouped:
         stage_tasks = grouped[current_stage]
         pending = [task for task in stage_tasks if tasks_state[task.task_id]["status"] in {"pending", "retry"}]
-
         if not pending:
             current_stage += 1
             run_ref.update({"currentStage": current_stage, "updatedAt": datetime.now(timezone.utc).isoformat()})
             continue
-
         if stage_tasks[0].stage == "parallel":
             results = await _run_tasks_concurrently(run_ref, pending, normalized_document)
         else:
             results = [await _run_task(run_ref, task, normalized_document) for task in pending]
-
         if any(result == "failed" for result in results):
             run_ref.update({"status": "failed", "updatedAt": datetime.now(timezone.utc).isoformat()})
             return
-
     run_ref.update({"status": "succeeded", "updatedAt": datetime.now(timezone.utc).isoformat()})
-
-
 async def _run_tasks_concurrently(
     run_ref: firestore.DocumentReference,
     tasks: list[Task],
@@ -468,8 +477,6 @@ async def _run_tasks_concurrently(
     async with httpx.AsyncClient(timeout=30) as client:
         coros = [_run_task(run_ref, task, normalized_document, client) for task in tasks]
         return await asyncio.gather(*coros)
-
-
 async def _run_task(
     run_ref: firestore.DocumentReference,
     task: Task,
@@ -478,7 +485,6 @@ async def _run_task(
 ) -> str:
     task_path = f"tasks.{task.task_id}"
     task_state = run_ref.get().to_dict()["tasks"][task.task_id]
-
     endpoint = _service_endpoint(task.target)
     if not endpoint:
         run_ref.update(
@@ -489,21 +495,18 @@ async def _run_task(
             }
         )
         return "skipped"
-
     run_ref.update(
         {
             f"{task_path}.status": "in-progress",
             f"{task_path}.startedAt": datetime.now(timezone.utc).isoformat(),
         }
     )
-
     payload = {
         "tenderId": run_ref.parent.parent.id,
         "taskId": task.task_id,
         "target": task.target,
         "document": normalized_document,
     }
-
     try:
         if client is None:
             async with httpx.AsyncClient(timeout=30) as session:
@@ -525,8 +528,6 @@ async def _run_task(
             }
         )
         return "retry" if retries < 3 else "failed"
-
-
 def _load_normalized_document(firestore_client: FirestoreClient, tender_id: str) -> dict[str, Any]:
     doc = firestore_client.collection(settings.parsed_collection).document(tender_id).get()
     if not doc.exists:
@@ -535,127 +536,70 @@ def _load_normalized_document(firestore_client: FirestoreClient, tender_id: str)
     if not isinstance(payload, dict):
         raise KeyError(f"Normalized document for tender {tender_id} is malformed.")
     return payload
-
-
-def _get_search_client() -> Any:
-    global _search_client
-    if discoveryengine_v1beta is None:
-        raise RuntimeError(
-            "google-cloud-discoveryengine is not installed. Add it to requirements.txt for the orchestrator service."
-        )
-    if _search_client is not None:
-        return _search_client
-    location_hint = (
-        _extract_location_from_path(settings.vertex_rag_serving_config_path)
-        or _extract_location_from_path(settings.vertex_rag_data_store_id)
-        or settings.vertex_rag_location
-    )
-    endpoint = None
-    if location_hint and location_hint != "global":
-        endpoint = f"{location_hint}-discoveryengine.googleapis.com"
-    client_options = {"api_endpoint": endpoint} if endpoint else None
-    _search_client = discoveryengine_v1beta.SearchServiceClient(client_options=client_options)
-    return _search_client
-
-
 def _execute_vertex_search(request: RagQueryRequest) -> RagQueryResponse:
-    client = _get_search_client()
-    serving_config = settings.vertex_rag_serving_config_path
-    serving_config_id = settings.vertex_rag_serving_config_id or "default_serving_config"
-    if not serving_config:
-        data_store_id = settings.vertex_rag_data_store_id
-        if not data_store_id:
-            raise RuntimeError("VERTEX_RAG_DATA_STORE_ID is not configured.")
-        if "/" in data_store_id:
-            normalized = data_store_id.rstrip("/")
-            serving_config = f"{normalized}/servingConfigs/{serving_config_id}"
-        else:
-            project = settings.project_id
-            if not project:
-                raise RuntimeError(
-                    "GCP_PROJECT or GOOGLE_CLOUD_PROJECT must be set to build Discovery Engine serving config path."
-                )
-            location = settings.vertex_rag_location or "global"
-            serving_config = discoveryengine_v1beta.SearchServiceClient.serving_config_path(
-                project,
-                location,
-                data_store_id,
-                serving_config_id,
-            )
-
-    summary_spec = discoveryengine_v1beta.SearchRequest.ContentSearchSpec.SummarySpec(
-        summary_result_count=1,
-        include_citations=True,
+    client = _get_rag_service_client()
+    if not settings.vertex_rag_corpus_path:
+        raise RuntimeError("VERTEX_RAG_CORPUS_PATH is not configured.")
+    location = settings.vertex_rag_location or _extract_location_from_path(settings.vertex_rag_corpus_path)
+    if not location:
+        raise RuntimeError("Unable to determine Vertex RAG location. Set VERTEX_RAG_CORPUS_LOCATION.")
+    project_id = settings.project_id or _extract_project_from_resource(settings.vertex_rag_corpus_path)
+    if not project_id:
+        raise RuntimeError("Unable to determine GCP project for Vertex RAG requests.")
+    rag_resource = aiplatform_v1beta1.RetrieveContextsRequest.VertexRagStore.RagResource(
+        rag_corpus=settings.vertex_rag_corpus_path,
     )
-    search_request = discoveryengine_v1beta.SearchRequest(
-        serving_config=serving_config,
-        query=request.question,
-        page_size=request.pageSize or 5,
-        content_search_spec=discoveryengine_v1beta.SearchRequest.ContentSearchSpec(
-            summary_spec=summary_spec
-        ),
+    if request.ragFileIds:
+        rag_resource.rag_file_ids.extend(request.ragFileIds)
+    vertex_rag_store = aiplatform_v1beta1.RetrieveContextsRequest.VertexRagStore(
+        rag_resources=[rag_resource]
     )
-    if request.conversationId:
-        search_request.user_pseudo_id = request.conversationId
-
-    iterator = client.search(request=search_request)
-    results = list(iterator)
-
-    summary = getattr(iterator, "summary", None)
-    answers: List[RagAnswer] = []
-    if summary and summary.summary_text:
-        citations: List[RagCitation] = []
-        metadata_entries = getattr(summary, "summary_with_metadata", None)
-        if metadata_entries:
-            if not isinstance(metadata_entries, Iterable) or isinstance(metadata_entries, (str, bytes)):
-                metadata_entries = [metadata_entries]
-            for meta in metadata_entries:
-                meta_dict = MessageToDict(meta, preserving_proto_field_name=True)
-                citation_meta = meta_dict.get("citationMetadata", {})
-                references = meta_dict.get("references", [])
-                for citation_entry in citation_meta.get("citations", []):
-                    sources: List[Dict[str, Any]] = []
-                for source in citation_entry.get("sources", []):
-                    ref_index = source.get("referenceIndex")
-                    ref_payload = references[ref_index] if isinstance(ref_index, int) and ref_index < len(references) else {}
-                    sources.append(
-                        {
-                            "reference": ref_payload,
-                            "pageIdentifier": source.get("pageIdentifier"),
-                        }
-                    )
-                citations.append(
-                    RagCitation(
-                        startIndex=citation_entry.get("startIndex"),
-                        endIndex=citation_entry.get("endIndex"),
-                        sources=sources,
-                    )
-                )
-        answers.append(RagAnswer(text=summary.summary_text, citations=citations))
-
+    rag_query = aiplatform_v1beta1.RagQuery(
+        text=request.question,
+        similarity_top_k=request.pageSize or 5,
+    )
+    parent = f"projects/{project_id}/locations/{location}"
+    response = client.retrieve_contexts(
+        request=aiplatform_v1beta1.RetrieveContextsRequest(
+            parent=parent,
+            query=rag_query,
+            vertex_rag_store=vertex_rag_store,
+        )
+    )
+    contexts = list(getattr(response.contexts, "contexts", []))
+    if not contexts:
+        return RagQueryResponse(answers=[RagAnswer(text="No relevant context found.", citations=[])], documents=[])
     documents: List[RagDocument] = []
-    for result in results:
-        document = result.document
-        derived = (
-            MessageToDict(document.derived_struct_data, preserving_proto_field_name=True)
-            if document.derived_struct_data
-            else {}
-        )
-        struct = (
-            MessageToDict(document.struct_data, preserving_proto_field_name=True)
-            if document.struct_data
-            else {}
-        )
-        content_uri = document.content.uri if document.content and getattr(document.content, "uri", None) else None
-        snippet = derived.get("snippet") or struct.get("snippet")
-        documents.append(
-            RagDocument(
-                id=document.id or result.id or document.name,
-                uri=content_uri or derived.get("uri"),
-                title=derived.get("title") or struct.get("title"),
-                snippet=snippet,
-                metadata=derived or struct or None,
+    sources_seen: set[str] = set()
+    for ctx in contexts:
+        source_uri = getattr(ctx, "source_uri", "") or ""
+        text = getattr(ctx, "text", "") or ""
+        distance = getattr(ctx, "distance", None)
+        metadata = {"distance": distance} if distance is not None else None
+        if source_uri not in sources_seen:
+            documents.append(
+                RagDocument(
+                    id=source_uri or None,
+                    uri=source_uri or None,
+                    title=source_uri.split("/")[-1] if source_uri else None,
+                    snippet=text[:400],
+                    metadata=metadata,
+                )
+            )
+            sources_seen.add(source_uri)
+    answer_text, citation_source = _run_generative_agent(project_id, location, request.question, contexts)
+    if not answer_text.strip():
+        answer_text = "No relevant context found."
+    citations: List[RagCitation] = []
+    if citation_source:
+        citations.append(
+            RagCitation(
+                startIndex=None,
+                endIndex=None,
+                sources=[{"sourceUri": citation_source}],
             )
         )
-
+    answers = [RagAnswer(text=answer_text, citations=citations)]
     return RagQueryResponse(answers=answers, documents=documents)
+
+
