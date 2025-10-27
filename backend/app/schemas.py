@@ -52,6 +52,36 @@ class ParseMetadata(BaseModel):
         populate_by_name = True
 
 
+class RagIngestionStatus(str, Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+
+
+class RagFile(BaseModel):
+    rag_file_name: str = Field(..., alias="ragFileName")
+    source_uri: str = Field(..., alias="sourceUri")
+    rag_corpus_path: Optional[str] = Field(default=None, alias="ragCorpusPath")
+    branch: Optional[str] = None
+    data_store_path: Optional[str] = Field(default=None, alias="dataStorePath")
+    created_at: Optional[datetime] = Field(default=None, alias="createdAt")
+
+    class Config:
+        populate_by_name = True
+
+
+class RagIngestionMetadata(BaseModel):
+    status: RagIngestionStatus = RagIngestionStatus.PENDING
+    operation_name: Optional[str] = Field(default=None, alias="operationName")
+    started_at: Optional[datetime] = Field(default=None, alias="startedAt")
+    completed_at: Optional[datetime] = Field(default=None, alias="completedAt")
+    last_error: Optional[str] = Field(default=None, alias="lastError")
+
+    class Config:
+        populate_by_name = True
+
+
 class TenderSession(BaseModel):
     tender_id: UUID
     status: TenderStatus
@@ -59,12 +89,16 @@ class TenderSession(BaseModel):
     created_by: Optional[str] = None
     files: list[FileRecord] = Field(default_factory=list)
     parse: ParseMetadata = Field(default_factory=ParseMetadata)
+    rag_ingestion: RagIngestionMetadata = Field(default_factory=RagIngestionMetadata, alias="ragIngestion")
+    rag_files: list[RagFile] = Field(default_factory=list, alias="ragFiles")
 
 
 class CreateTenderResponse(BaseModel):
     tender_id: UUID = Field(..., serialization_alias="tenderId")
     status: TenderStatus
     upload_limits: UploadLimits = Field(..., alias="uploadLimits")
+    rag_ingestion: RagIngestionMetadata = Field(..., alias="ragIngestion")
+    rag_files: list[RagFile] = Field(default_factory=list, alias="ragFiles")
 
     class Config:
         populate_by_name = True
@@ -83,6 +117,8 @@ class TenderStatusResponse(BaseModel):
     files: list[FileRecord]
     created_at: datetime = Field(..., alias="createdAt")
     parse: ParseMetadata
+    rag_ingestion: RagIngestionMetadata = Field(..., alias="ragIngestion")
+    rag_files: list[RagFile] = Field(default_factory=list, alias="ragFiles")
 
     class Config:
         populate_by_name = True

@@ -13,6 +13,8 @@ import {
   uploadFileToSignedUrl,
   UploadLimits,
   UploadInitResponse,
+  RagIngestionStatus,
+  retryRagIngestion,
 } from "../../lib/tenderApi";
 
 const DEFAULT_ALLOWED_TYPES = [
@@ -93,6 +95,7 @@ export default function TenderPage() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [isSessionLoading, setIsSessionLoading] = useState(true);
+  const [isIngestionMutating, setIsIngestionMutating] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const allowedMimeTypes = useMemo(() => {
@@ -173,23 +176,40 @@ export default function TenderPage() {
   }, [tenderId]);
 
   const requestParsing = useCallback(() => {
+    if (!session || session.ragIngestion.status !== "done") {
+      setErrorMessage(
+        "RAG ingestion has not completed yet. Wait for ingestion to finish or retry it before running the playbook.",
+      );
+      return;
+    }
     setParsingRequested(true);
     void startParsing().catch(() => {
       setParsingRequested(false);
     });
-  }, [startParsing]);
+  }, [session, startParsing]);
 
   useEffect(() => {
     if (!tenderId || !session) return;
 
-    if (session.status === "parsing" || session.status === "uploading") {
+    const shouldPoll =
+      session.status === "parsing" ||
+      session.status === "uploading" ||
+      session.ragIngestion.status === "pending" ||
+      session.ragIngestion.status === "running";
+
+    if (shouldPoll) {
       const interval = setInterval(() => {
         void refreshSession();
       }, 5000);
       return () => clearInterval(interval);
     }
 
-    if (session.status === "uploaded" && !parsingRequested && !isProcessing) {
+    if (
+      session.status === "uploaded" &&
+      session.ragIngestion.status === "done" &&
+      !parsingRequested &&
+      !isProcessing
+    ) {
       requestParsing();
     }
   }, [
@@ -313,6 +333,20 @@ export default function TenderPage() {
     ],
   );
 
+  const handleRetryIngestion = useCallback(async () => {
+    if (!tenderId) return;
+    setErrorMessage(null);
+    setIsIngestionMutating(true);
+    try {
+      await retryRagIngestion(tenderId);
+      await refreshSession();
+    } catch (error) {
+      setErrorMessage((error as Error).message);
+    } finally {
+      setIsIngestionMutating(false);
+    }
+  }, [refreshSession, tenderId]);
+
   const handleFileInput = useCallback(
     (event: React.ChangeEvent<HTMLInputElement>) => {
       if (!isSessionReady) {
@@ -361,13 +395,60 @@ export default function TenderPage() {
   );
   const isReadyForValidation = session?.status === "parsed";
 
-  const statusState =
+  const tenderStatus =
     session?.status ?? (isSessionLoading ? "uploading" : "uploading");
+  const ingestionStatus: RagIngestionStatus =
+    session?.ragIngestion?.status ?? "pending";
+  const ingestionError = session?.ragIngestion?.lastError ?? null;
+
+  const uploadStepState: StepState =
+    tenderStatus === "uploading" ? "active" : "completed";
+
+  const ingestionStepState: StepState =
+    ingestionStatus === "running"
+      ? "active"
+      : ingestionStatus === "done"
+        ? "completed"
+        : ingestionStatus === "failed"
+          ? "failed"
+          : tenderStatus === "uploading"
+            ? "pending"
+            : "active";
+
+  const playbookStepState: StepState =
+    tenderStatus === "parsing"
+      ? "active"
+      : tenderStatus === "parsed"
+        ? "completed"
+        : tenderStatus === "failed"
+          ? "failed"
+          : ingestionStatus === "done"
+            ? "pending"
+            : "pending";
+
+  const validationStepState: StepState =
+    tenderStatus === "parsed"
+      ? "completed"
+      : tenderStatus === "failed"
+        ? "failed"
+        : "pending";
 
   const uploadDescription =
-    statusState === "uploading"
+    tenderStatus === "uploading"
       ? "Documents are being streamed to secure storage."
       : "Documents are stored securely.";
+
+  const ingestionDescription =
+    ingestionStatus === "running"
+      ? "Importing documents into the Vertex RAG corpus."
+      : ingestionStatus === "done"
+        ? "Documents are ready inside the Vertex RAG corpus."
+        : ingestionStatus === "failed"
+          ? "Ingestion failed. Retry to requeue the import job."
+          : "Waiting for uploads to finish before starting ingestion.";
+
+  const canStartProcessing =
+    tenderStatus === "uploaded" && ingestionStatus === "done";
 
   return (
     <main className="mx-auto flex min-h-screen max-w-4xl flex-col gap-6 px-4 py-16">
@@ -521,57 +602,66 @@ export default function TenderPage() {
             <StatusStep
               label="Upload files"
               description={uploadDescription}
-              state={statusState === "uploading" ? "active" : "completed"}
+              state={uploadStepState}
+            />
+            <StatusStep
+              label="Ingest into Vertex RAG corpus"
+              description={ingestionDescription}
+              state={ingestionStepState}
             />
             <StatusStep
               label="AI playbook processing"
               description={
-                statusState === "failed"
+                tenderStatus === "failed"
                   ? "Processing failed. Review the error and retry."
                   : "Extracting structured data from your tender pack."
               }
-              state={
-                statusState === "uploading"
-                  ? "pending"
-                  : statusState === "uploaded"
-                    ? "active"
-                    : statusState === "parsing"
-                      ? "active"
-                      : statusState === "parsed"
-                        ? "completed"
-                        : statusState === "failed"
-                          ? "failed"
-                          : "pending"
-              }
+              state={playbookStepState}
             />
             <StatusStep
               label="Ready for validation"
               description="Switch to the validation workspace to review results."
-              state={
-                statusState === "parsed"
-                  ? "completed"
-                  : statusState === "failed"
-                    ? "failed"
-                    : "pending"
-              }
+              state={validationStepState}
             />
           </div>
           <p>
-              {statusState === "parsing"
-                ? "The managed Vertex AI playbook is running. This may take a minute for large tenders."
-                : statusState === "parsed"
-                  ? "Playbook complete! Head over to the validation workspace to review extracted data."
-                : statusState === "failed"
-                  ? `Processing failed. ${parseInfo?.error ?? "Try re-running the process once issues are resolved."}`
-                  : "Waiting for uploads to finish. Processing will start automatically when all files are uploaded."}
+            {ingestionStatus === "failed" ? (
+              <span className="text-destructive">
+                RAG ingestion failed.{" "}
+                {ingestionError
+                  ? `Reason: ${ingestionError}`
+                  : "Retry the ingestion job to continue."}
+              </span>
+            ) : ingestionStatus === "running" ? (
+              "Importing documents into Vertex RAG. This may take a minute for large tenders."
+            ) : ingestionStatus === "done" ? (
+              tenderStatus === "parsed"
+                ? "Playbook complete! Head over to the validation workspace to review extracted data."
+                : tenderStatus === "parsing"
+                  ? "The managed Vertex AI playbook is running. This may take a minute for large tenders."
+                  : "Documents are ready in Vertex RAG. Start the playbook when you are ready."
+            ) : (
+              "Waiting for uploads to finish before starting ingestion."
+            )}
           </p>
+
+          {ingestionStatus === "failed" ? (
+            <button
+              type="button"
+              onClick={handleRetryIngestion}
+              className="inline-flex items-center justify-center rounded-md border border-destructive px-3 py-2 text-xs font-medium text-destructive transition hover:bg-destructive/10 disabled:opacity-60"
+              disabled={isIngestionMutating}
+            >
+              {isIngestionMutating ? "Retrying..." : "Retry ingestion"}
+            </button>
+          ) : null}
 
           {session?.status === "uploaded" && !parsingRequested ? (
             <button
               type="button"
               onClick={requestParsing}
               className="mt-1 inline-flex items-center justify-center rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-60"
-              disabled={isProcessing}
+              disabled={isProcessing || !canStartProcessing}
             >
               {isProcessing ? "Starting..." : "Start processing now"}
             </button>
@@ -596,6 +686,29 @@ export default function TenderPage() {
               </span>
               . You can inspect the JSON in Cloud Storage.
             </p>
+          ) : null}
+
+          {session?.ragFiles?.length ? (
+            <div className="rounded-md border border-dashed border-muted px-3 py-2">
+              <p className="text-xs font-medium text-foreground">
+                RAG corpus artifacts
+              </p>
+              <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+                {session.ragFiles.map((item) => (
+                  <li key={item.ragFileName}>
+                    <span className="font-mono text-foreground">
+                      {item.ragFileName}
+                    </span>
+                    {item.sourceUri ? (
+                      <span className="text-muted-foreground">
+                        {" "}
+                        → {item.sourceUri}
+                      </span>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </div>
           ) : null}
         </div>
       </section>

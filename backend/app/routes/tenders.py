@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import json
+import logging
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException
 
 from .. import schemas
+from ..services.ingestion_client import IngestionClientError
+from ..services.ingestion_manager import reset_rag_ingestion, start_ingestion_if_ready
 from ..services.rag_client import RagClientError, get_rag_client
 from ..services.storage import StorageServiceError, storage_service
 from ..settings import storage_settings, upload_settings
 from ..store import store
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/tenders", tags=["tenders"])
 
@@ -33,6 +38,8 @@ def create_tender_session(
         tender_id=session.tender_id,
         status=session.status,
         upload_limits=_build_upload_limits(),
+        rag_ingestion=session.rag_ingestion,
+        rag_files=session.rag_files,
     )
 
 
@@ -49,6 +56,8 @@ def get_tender_session(tender_id: UUID) -> schemas.TenderStatusResponse:
         files=session.files,
         created_at=session.created_at,
         parse=session.parse,
+        rag_ingestion=session.rag_ingestion,
+        rag_files=session.rag_files,
     )
 
 
@@ -61,6 +70,20 @@ def trigger_parsing(tender_id: UUID) -> schemas.TenderStatusResponse:
 
     if not session.files:
         raise HTTPException(status_code=400, detail="No files uploaded for this tender.")
+
+    if session.rag_ingestion.status != schemas.RagIngestionStatus.DONE:
+        raise HTTPException(
+            status_code=409,
+            detail="RAG ingestion is not complete. Please wait for ingestion to finish before running the playbook.",
+        )
+
+    if not session.rag_files:
+        raise HTTPException(
+            status_code=409,
+            detail="RAG ingestion completed without rag files. Retry ingestion before running the playbook.",
+        )
+
+    rag_file_ids = [rf.rag_file_name for rf in session.rag_files]
 
     raw_uris: list[str] = []
     for file in session.files:
@@ -91,7 +114,8 @@ def trigger_parsing(tender_id: UUID) -> schemas.TenderStatusResponse:
         playbook_response = client.run_playbook(
             tender_id=str(tender_id),
             gcs_uris=raw_uris,
-            forget_after_run=True,
+            rag_file_ids=rag_file_ids,
+            forget_after_run=False,
         )
     except RagClientError as exc:
         store.mark_parsing_failed(tender_id, str(exc))
@@ -107,7 +131,62 @@ def trigger_parsing(tender_id: UUID) -> schemas.TenderStatusResponse:
         files=updated.files,
         created_at=updated.created_at,
         parse=updated.parse,
+        rag_ingestion=updated.rag_ingestion,
+        rag_files=updated.rag_files,
     )
+
+
+@router.get("/{tender_id}/ingestion")
+def get_ingestion_status(tender_id: UUID) -> dict:
+    try:
+        session = store.get_session(tender_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "ragIngestion": session.rag_ingestion.model_dump(by_alias=True),
+        "ragFiles": [rf.model_dump(by_alias=True) for rf in session.rag_files],
+    }
+
+
+@router.post("/{tender_id}/ingestion/retry")
+def retry_ingestion(tender_id: UUID) -> dict:
+    try:
+        reset_rag_ingestion(tender_id)
+        start_ingestion_if_ready(tender_id, force=True)
+        session = store.get_session(tender_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except IngestionClientError as exc:
+        logger.exception("Retry ingestion failed for tender %s: %s", tender_id, exc)
+        session = store.get_session(tender_id)
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "ragIngestion": session.rag_ingestion.model_dump(by_alias=True),
+        "ragFiles": [rf.model_dump(by_alias=True) for rf in session.rag_files],
+    }
+
+
+@router.delete("/{tender_id}/rag-files")
+def delete_rag_files(tender_id: UUID) -> dict:
+    try:
+        session = store.get_session(tender_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    rag_file_ids = [rf.rag_file_name for rf in session.rag_files if rf.rag_file_name]
+    if rag_file_ids:
+        client = get_rag_client()
+        try:
+            client.delete_rag_files(rag_file_ids)
+        except RagClientError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    reset_rag_ingestion(tender_id)
+    session = store.get_session(tender_id)
+    return {
+        "ragIngestion": session.rag_ingestion.model_dump(by_alias=True),
+        "ragFiles": [rf.model_dump(by_alias=True) for rf in session.rag_files],
+    }
 
 
 @router.get("/{tender_id}/playbook")
@@ -137,3 +216,6 @@ def get_playbook_results(tender_id: UUID) -> dict:
         return json.loads(raw)
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=500, detail=f"Stored playbook JSON is invalid: {exc}") from exc
+
+
+

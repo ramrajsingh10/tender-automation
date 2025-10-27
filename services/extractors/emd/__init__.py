@@ -1,1 +1,0 @@
-"""EMD extractor package."""

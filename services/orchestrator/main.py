@@ -3,21 +3,22 @@ import asyncio
 import base64
 import json
 import logging
+import mimetypes
 import os
-import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 import httpx
 from fastapi import FastAPI, HTTPException, Request, status
+from google.api_core import exceptions as google_exceptions
 from google.auth import exceptions as auth_exceptions
 from google.cloud import firestore, storage
 from google.cloud.firestore import Client as FirestoreClient
 from google.protobuf.json_format import MessageToDict
 from pydantic import BaseModel, Field
 import vertexai
-from vertexai.preview.generative_models import GenerativeModel, GenerationConfig
+from vertexai.preview.generative_models import GenerativeModel, GenerationConfig, Part
 from pipeline import DEFAULT_PIPELINE, Task, build_pipeline_run_document
 try:
     from google.cloud import aiplatform_v1beta1  # type: ignore
@@ -26,19 +27,7 @@ except ImportError:  # pragma: no cover - optional dependency
 logger = logging.getLogger(__name__)
 def _load_service_map() -> dict[str, str]:
     """Compile service endpoint overrides from environment variables."""
-    base_map = {
-        "ingest-api": os.getenv("INGEST_API_URL", ""),
-        "extractor.deadlines": os.getenv("DEADLINES_EXTRACTOR_URL", ""),
-        "extractor.emd": os.getenv("EMD_EXTRACTOR_URL", ""),
-        "extractor.requirements": os.getenv("REQUIREMENTS_EXTRACTOR_URL", ""),
-        "extractor.penalties": os.getenv("PENALTIES_EXTRACTOR_URL", ""),
-        "extractor.annexures": os.getenv("ANNEXURES_EXTRACTOR_URL", ""),
-        "artifact.annexures": os.getenv("ARTIFACT_ANNEXURES_URL", ""),
-        "artifact.checklist": os.getenv("ARTIFACT_CHECKLIST_URL", ""),
-        "artifact.plan": os.getenv("ARTIFACT_PLAN_URL", ""),
-        "rag.index": os.getenv("RAG_INDEX_URL", ""),
-        "qa.loop": os.getenv("QA_LOOP_URL", ""),
-    }
+    base_map: dict[str, str] = {}
     json_overrides = os.getenv("SERVICE_ENDPOINTS_JSON")
     if json_overrides:
         try:
@@ -68,6 +57,11 @@ _rag_data_client: Any | None = None
 _storage_client: storage.Client | None = None
 _rag_service_client: Any | None = None
 _vertexai_init_context: Optional[Tuple[str, str]] = None
+
+def _rag_file_name_to_id(resource_name: str) -> str:
+    if not resource_name:
+        return resource_name
+    return resource_name.rsplit("/", 1)[-1]
 DEFAULT_PLAYBOOK = [
     {
         "id": "document_id",
@@ -83,9 +77,10 @@ class PlaybookQuestion(BaseModel):
     question: str
 class RagPlaybookRequest(BaseModel):
     tenderId: str
-    gcsUris: List[str]
+    gcsUris: List[str] = Field(default_factory=list)
     questions: Optional[List[PlaybookQuestion]] = None
-    forgetAfterRun: bool = True
+    ragFileIds: List[str] | None = None
+    forgetAfterRun: bool = False
     pageSize: int | None = None
     class Config:
         populate_by_name = True
@@ -97,15 +92,21 @@ class RagPlaybookResult(BaseModel):
 class RagPlaybookResponse(BaseModel):
     results: List[RagPlaybookResult]
     outputUri: Optional[str] = None
+    ragFiles: List[Dict[str, Any]] = Field(default_factory=list)
 class RagQueryRequest(BaseModel):
     tenderId: str
     question: str
     conversationId: str | None = None
     pageSize: int | None = None
+    gcsUris: List[str] = Field(default_factory=list)
     ragFileIds: List[str] | None = None
 
     class Config:
         populate_by_name = True
+
+
+class RagDeleteRequest(BaseModel):
+    ragFileIds: List[str] = Field(default_factory=list)
 
 
 class RagCitation(BaseModel):
@@ -159,18 +160,25 @@ def _get_storage_client() -> storage.Client:
 def _extract_location_from_path(resource_path: str) -> str | None:
     if not resource_path:
         return None
-    match = re.search(r"/locations/([^/]+)/", resource_path)
-    if not match:
+    marker = "/locations/"
+    start = resource_path.find(marker)
+    if start == -1:
         return None
-    location = match.group(1)
+    start += len(marker)
+    end = resource_path.find("/", start)
+    location = resource_path[start:] if end == -1 else resource_path[start:end]
     return location or None
 def _extract_project_from_resource(resource_path: str) -> str | None:
     if not resource_path:
         return None
-    match = re.search(r"projects/([^/]+)/", resource_path)
-    if not match:
+    marker = "projects/"
+    start = resource_path.find(marker)
+    if start == -1:
         return None
-    return match.group(1)
+    start += len(marker)
+    end = resource_path.find("/", start)
+    project = resource_path[start:] if end == -1 else resource_path[start:end]
+    return project or None
 def _ensure_vertexai_initialized(project_id: str, location: str) -> None:
     global _vertexai_init_context
     if _vertexai_init_context != (project_id, location):
@@ -252,6 +260,65 @@ def _run_generative_agent(
                 matched_source = src
                 break
     return answer_text, matched_source
+
+
+def _guess_mime_type(uri: str) -> str:
+    mime, _ = mimetypes.guess_type(uri)
+    if mime:
+        return mime
+    if uri.lower().endswith(".pdf"):
+        return "application/pdf"
+    if uri.lower().endswith(".docx"):
+        return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    return "application/octet-stream"
+
+
+def _generate_document_answer(question: str, gcs_uris: List[str]) -> str:
+    if not gcs_uris:
+        return ""
+    project_id = settings.project_id or os.getenv("GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT")
+    location = settings.vertex_rag_location or _extract_location_from_path(settings.vertex_rag_corpus_path)
+    if not project_id or not location:
+        logger.warning(
+            "Skipping direct document answer generation due to missing project (%s) or location (%s).",
+            project_id,
+            location,
+        )
+        return ""
+
+    _ensure_vertexai_initialized(project_id, location)
+    model_id = settings.vertex_rag_generative_model or "gemini-2.5-flash"
+    model = GenerativeModel(model_id)
+
+    parts: List[Part] = []
+    for uri in gcs_uris:
+        parts.append(Part.from_uri(uri, mime_type=_guess_mime_type(uri)))
+
+    instruction = (
+        "You are an assistant helping with government tender reviews. "
+        "Read the attached document(s) in full and answer the question using the exact wording from the tender when possible. "
+        "When the document contains a schedule, table, or list of deadlines, return every row or bullet in the same order it appears. "
+        "If rows are numbered (for example, `6 Start Date ...`, `7 Last Date ...`), include the number and continue listing the subsequent rows until the schedule ends. "
+        "Return the complete answer drawn from the tender. If the tender includes a table or schedule, list every row in order with one line per item formatted as `Label: value`, preserving the original wording, numbering, punctuation, dates, and times. "
+        "Continue until you have covered the entire schedule or section related to the question; do not stop after the first match. "
+        "If the documents do not contain the requested information anywhere, respond with NOT_FOUND."
+    )
+
+    try:
+        response = model.generate_content(
+            parts + [Part.from_text(f"{instruction}\n\nQuestion:\n{question}")],
+            generation_config=GenerationConfig(temperature=0.0, max_output_tokens=1024),
+        )
+        answer_text = (getattr(response, "text", "") or "").strip()
+    except Exception as exc:  # pragma: no cover - generative call can raise
+        logger.warning("Direct document analysis failed: %s", exc)
+        return ""
+
+    if not answer_text or answer_text.upper().startswith("NOT_FOUND"):
+        return ""
+    return answer_text
+
+
 def _service_endpoint(task_target: str) -> str | None:
     return (settings.service_map or {}).get(task_target)
 def _map_rag_files_by_uri() -> Dict[str, str]:
@@ -261,15 +328,24 @@ def _map_rag_files_by_uri() -> Dict[str, str]:
     mapping: Dict[str, str] = {}
     for rag_file in client.list_rag_files(parent=settings.vertex_rag_corpus_path):
         gcs_source = getattr(rag_file, "gcs_source", None)
-        uri = getattr(gcs_source, "uri", None)
-        if uri:
-            mapping[uri] = rag_file.name
+        if not gcs_source:
+            continue
+        candidates: Iterable[str] = []
+        explicit_uri = getattr(gcs_source, "uri", None)
+        if explicit_uri:
+            candidates = [explicit_uri]
+        else:
+            uris_attr = getattr(gcs_source, "uris", None)
+            if isinstance(uris_attr, Iterable):
+                candidates = [str(item) for item in uris_attr]
+        for uri in candidates:
+            if uri:
+                mapping[str(uri)] = rag_file.name
     return mapping
-def _import_rag_files(gcs_uris: List[str]) -> List[str]:
+def _import_rag_files(gcs_uris: List[str]) -> Dict[str, str]:
     if not gcs_uris:
-        return []
+        return {}
     client = _get_rag_data_client()
-    before = _map_rag_files_by_uri()
     request = aiplatform_v1beta1.ImportRagFilesRequest(
         parent=settings.vertex_rag_corpus_path,
         import_rag_files_config={"gcs_source": {"uris": gcs_uris}},
@@ -277,12 +353,14 @@ def _import_rag_files(gcs_uris: List[str]) -> List[str]:
     operation = client.import_rag_files(request=request)
     operation.result()
     after = _map_rag_files_by_uri()
-    created: List[str] = []
+    resolved: Dict[str, str] = {}
     for uri in gcs_uris:
         name = after.get(uri)
-        if name and before.get(uri) != name:
-            created.append(name)
-    return created
+        if name:
+            resolved[uri] = name
+        else:
+            logger.warning("RagFile missing for uri %s after import.", uri)
+    return resolved
 def _delete_rag_files(rag_file_names: List[str]) -> None:
     if not rag_file_names:
         return
@@ -310,57 +388,80 @@ def _resolve_playbook_questions(questions: Optional[List[PlaybookQuestion]]) -> 
     return [PlaybookQuestion(**item) for item in DEFAULT_PLAYBOOK]
 def _run_playbook(request: RagPlaybookRequest) -> RagPlaybookResponse:
     questions = _resolve_playbook_questions(request.questions)
-    rag_files: List[str] = []
-    imported_via_corpus = False
-    if request.gcsUris:
-        if settings.vertex_rag_corpus_path:
-            rag_files = _import_rag_files(request.gcsUris)
-            imported_via_corpus = True
-        elif not (settings.vertex_rag_data_store_id or settings.vertex_rag_default_branch):
-            raise RuntimeError(
-                "No RAG backend configured for ingestion; set VERTEX_RAG_DATA_STORE_ID or VERTEX_RAG_CORPUS_PATH."
-            )
-        else:
-            logger.debug(
-                "Skipping direct RagFile import for tender %s; relying on Discovery Engine data store contents.",
-                request.tenderId,
-            )
+    rag_file_mapping: Dict[str, str] = {}
+    rag_file_names: List[str] = []
+    if request.ragFileIds:
+        rag_file_names = list(request.ragFileIds)
+    elif request.gcsUris:
+        if not settings.vertex_rag_corpus_path:
+            raise RuntimeError("VERTEX_RAG_CORPUS_PATH is not configured.")
+        rag_file_mapping = _import_rag_files(request.gcsUris)
+        rag_file_names = list(rag_file_mapping.values())
+    elif not request.gcsUris:
+        raise RuntimeError("No ragFileIds or gcsUris provided for playbook execution.")
+
+    rag_file_ids_for_query = rag_file_names or None
     results: List[RagPlaybookResult] = []
+    rag_file_handles: List[Dict[str, Any]] = []
+
     for question in questions:
         query_response = _execute_vertex_search(
             RagQueryRequest(
                 tenderId=request.tenderId,
                 question=question.question,
                 pageSize=request.pageSize,
-                ragFileIds=rag_files or None,
+                ragFileIds=rag_file_ids_for_query,
             )
         )
+        doc_answer = _generate_document_answer(
+            question.question,
+            request.gcsUris if request.gcsUris else list(rag_file_mapping.keys()),
+        )
+        rag_answers = query_response.answers or []
+
+        if doc_answer:
+            citation_list = rag_answers[0].citations if rag_answers else []
+            answers = [
+                RagAnswer(
+                    text=doc_answer.strip() or "No relevant context found.",
+                    citations=citation_list,
+                )
+            ]
+        elif rag_answers:
+            answers = rag_answers
+        else:
+            answers = [RagAnswer(text="No relevant context found.", citations=[])]
         results.append(
             RagPlaybookResult(
                 questionId=question.id,
                 question=question.question,
-                answers=query_response.answers,
+                answers=answers,
                 documents=query_response.documents,
             )
         )
+
     payload = {
         "tenderId": request.tenderId,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "results": [result.model_dump(mode="json") for result in results],
     }
     output_uri = _write_results_to_gcs(request.tenderId, payload)
-    if request.forgetAfterRun and imported_via_corpus:
-        if not rag_files:
-            # Fall back to resolving existing RagFiles for the provided URIs.
-            rag_files = [
-                name for uri, name in _map_rag_files_by_uri().items() if uri in request.gcsUris
-            ]
-        _delete_rag_files([name for name in rag_files if name])
-    return RagPlaybookResponse(results=results, outputUri=output_uri)
+
+    if rag_file_mapping:
+        rag_file_handles = [
+            {"ragFileName": name, "sourceUri": uri}
+            for uri, name in rag_file_mapping.items()
+        ]
+    elif request.ragFileIds:
+        rag_file_handles = [
+            {"ragFileName": name, "sourceUri": None} for name in request.ragFileIds
+        ]
+
+    return RagPlaybookResponse(results=results, outputUri=output_uri, ragFiles=rag_file_handles)
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Tender Pipeline Orchestrator",
-        description="Coordinates extraction, QA, and artifact generation tasks.",
+        description="Coordinates managed Vertex RAG playbook execution.",
         version="0.1.0",
     )
     @app.get("/healthz", tags=["meta"])
@@ -375,20 +476,76 @@ def create_app() -> FastAPI:
             )
         try:
             payload = _execute_vertex_search(request)
+        except google_exceptions.ResourceExhausted as exc:
+            logger.warning("RAG query quota exhausted for tender %s: %s", request.tenderId, exc)
+            raise HTTPException(
+                status_code=429,
+                detail="Vertex RAG embedding quota exhausted. Retry later or request a quota increase.",
+            ) from exc
+        except google_exceptions.GoogleAPICallError as exc:
+            logger.exception("Vertex RAG query failed for tender %s.", request.tenderId)
+            raise HTTPException(status_code=502, detail=f"Vertex Agent Builder query failed: {exc}") from exc
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception("RAG query failed for tender %s.", request.tenderId)
             raise HTTPException(status_code=502, detail=f"Vertex Agent Builder query failed: {exc}") from exc
+
+        gcs_uris: List[str] = list(request.gcsUris or [])
+        if not gcs_uris and request.ragFileIds:
+            mapping = _map_rag_files_by_uri()
+            wanted = set(request.ragFileIds)
+            for uri, name in mapping.items():
+                if name in wanted:
+                    gcs_uris.append(uri)
+        doc_answer = _generate_document_answer(request.question, gcs_uris)
+        if doc_answer:
+            citation_list = (
+                payload.answers[0].citations if payload.answers else []
+            )
+            payload.answers = [
+                RagAnswer(
+                    text=doc_answer.strip() or "No relevant context found.",
+                    citations=citation_list,
+                )
+            ]
         return payload
     @app.post("/rag/playbook", tags=["rag"])
     async def rag_playbook(request: RagPlaybookRequest) -> RagPlaybookResponse:
-        if not request.gcsUris:
-            raise HTTPException(status_code=400, detail="gcsUris must include at least one Cloud Storage uri.")
+        if not request.gcsUris and not request.ragFileIds:
+            raise HTTPException(
+                status_code=400,
+                detail="Provide either gcsUris to import or ragFileIds to reuse existing RagFiles.",
+            )
         try:
             response = _run_playbook(request)
+        except google_exceptions.ResourceExhausted as exc:
+            logger.warning("Playbook quota exhausted for tender %s: %s", request.tenderId, exc)
+            raise HTTPException(
+                status_code=429,
+                detail="Vertex RAG embedding quota exhausted. Retry later or request a quota increase.",
+            ) from exc
+        except google_exceptions.GoogleAPICallError as exc:
+            logger.exception("Playbook execution failed for tender %s.", request.tenderId)
+            raise HTTPException(status_code=502, detail=f"Failed to run playbook: {exc}") from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception("Playbook execution failed for tender %s.", request.tenderId)
             raise HTTPException(status_code=502, detail=f"Failed to run playbook: {exc}") from exc
         return response
+    @app.post("/rag/files/delete", tags=["rag"])
+    async def rag_files_delete(request: RagDeleteRequest) -> Dict[str, Any]:
+        if not request.ragFileIds:
+            raise HTTPException(status_code=400, detail="ragFileIds must not be empty.")
+        client = _get_rag_data_client()
+        failures: List[str] = []
+        for name in request.ragFileIds:
+            try:
+                client.delete_rag_file(name=name)
+            except Exception as exc:  # pragma: no cover - best effort cleanup
+                logger.warning("Failed to delete rag file %s: %s", name, exc)
+                failures.append(f"{name}: {exc}")
+        deleted = [name for name in request.ragFileIds if all(not entry.startswith(name) for entry in failures)]
+        return {"deleted": deleted, "errors": failures}
     @app.post("/pubsub/pipeline-trigger", status_code=status.HTTP_202_ACCEPTED)
     async def handle_pubsub(request: Request) -> dict[str, Any]:
         payload = await request.json()
@@ -550,7 +707,9 @@ def _execute_vertex_search(request: RagQueryRequest) -> RagQueryResponse:
         rag_corpus=settings.vertex_rag_corpus_path,
     )
     if request.ragFileIds:
-        rag_resource.rag_file_ids.extend(request.ragFileIds)
+        rag_resource.rag_file_ids.extend(
+            [_rag_file_name_to_id(rag_id) for rag_id in request.ragFileIds if rag_id]
+        )
     vertex_rag_store = aiplatform_v1beta1.RetrieveContextsRequest.VertexRagStore(
         rag_resources=[rag_resource]
     )
@@ -601,5 +760,6 @@ def _execute_vertex_search(request: RagQueryRequest) -> RagQueryResponse:
         )
     answers = [RagAnswer(text=answer_text, citations=citations)]
     return RagQueryResponse(answers=answers, documents=documents)
+
 
 

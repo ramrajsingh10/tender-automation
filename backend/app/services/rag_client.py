@@ -7,6 +7,9 @@ import requests
 from requests import Response
 from requests.exceptions import RequestException
 
+from google.auth.transport.requests import Request
+from google.oauth2 import id_token
+
 from ..settings import orchestrator_settings
 
 
@@ -26,6 +29,14 @@ class RagClient:
             )
         return f"{self.base_url.rstrip('/')}{path}"
 
+    def _auth_headers(self, audience_url: str) -> Dict[str, str]:
+        try:
+            credentials_request = Request()
+            token = id_token.fetch_id_token(credentials_request, audience_url.rstrip("/"))
+            return {"Authorization": f"Bearer {token}"}
+        except Exception as exc:  # pragma: no cover - auth bootstrap failure
+            raise RagClientError(f"Failed to obtain ID token for orchestrator: {exc}") from exc
+
     def query(
         self,
         *,
@@ -33,6 +44,8 @@ class RagClient:
         question: str,
         top_k: Optional[int] = None,
         conversation_id: Optional[str] = None,
+        rag_file_ids: Optional[List[str]] = None,
+        gcs_uris: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "tenderId": tender_id,
@@ -42,10 +55,15 @@ class RagClient:
             payload["pageSize"] = top_k
         if conversation_id:
             payload["conversationId"] = conversation_id
+        if rag_file_ids:
+            payload["ragFileIds"] = rag_file_ids
+        if gcs_uris:
+            payload["gcsUris"] = gcs_uris
 
         url = self._build_url("/rag/query")
+        headers = self._auth_headers(self.base_url)
         try:
-            response: Response = requests.post(url, json=payload, timeout=self.timeout_seconds)
+            response: Response = requests.post(url, json=payload, headers=headers, timeout=self.timeout_seconds)
         except RequestException as exc:  # pragma: no cover - network failure
             raise RagClientError(f"Failed to reach orchestrator RAG endpoint: {exc}") from exc
 
@@ -68,7 +86,8 @@ class RagClient:
         tender_id: str,
         gcs_uris: List[str],
         questions: Optional[List[Dict[str, str]]] = None,
-        forget_after_run: bool = True,
+        rag_file_ids: Optional[List[str]] = None,
+        forget_after_run: bool = False,
         page_size: Optional[int] = None,
     ) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
@@ -80,10 +99,13 @@ class RagClient:
             payload["questions"] = questions
         if page_size is not None:
             payload["pageSize"] = page_size
+        if rag_file_ids:
+            payload["ragFileIds"] = rag_file_ids
 
         url = self._build_url("/rag/playbook")
+        headers = self._auth_headers(self.base_url)
         try:
-            response: Response = requests.post(url, json=payload, timeout=self.timeout_seconds)
+            response: Response = requests.post(url, json=payload, headers=headers, timeout=self.timeout_seconds)
         except RequestException as exc:  # pragma: no cover
             raise RagClientError(f"Failed to reach orchestrator playbook endpoint: {exc}") from exc
 
@@ -99,6 +121,30 @@ class RagClient:
             return response.json()
         except ValueError as exc:  # pragma: no cover
             raise RagClientError(f"Invalid JSON response from orchestrator playbook: {exc}") from exc
+
+    def delete_rag_files(self, rag_file_ids: List[str]) -> Dict[str, Any]:
+        if not rag_file_ids:
+            raise RagClientError("rag_file_ids must not be empty when deleting rag files.")
+        url = self._build_url("/rag/files/delete")
+        payload = {"ragFileIds": rag_file_ids}
+        headers = self._auth_headers(self.base_url)
+        try:
+            response: Response = requests.post(url, json=payload, headers=headers, timeout=self.timeout_seconds)
+        except RequestException as exc:  # pragma: no cover
+            raise RagClientError(f"Failed to reach orchestrator delete endpoint: {exc}") from exc
+
+        if response.status_code >= 400:
+            try:
+                detail = response.json().get("detail")
+            except ValueError:
+                detail = response.text
+            raise RagClientError(
+                f"Orchestrator delete endpoint returned {response.status_code}: {detail or 'unknown error'}"
+            )
+        try:
+            return response.json()
+        except ValueError as exc:  # pragma: no cover
+            raise RagClientError(f"Invalid JSON response from orchestrator delete endpoint: {exc}") from exc
 
 
 _rag_client: RagClient | None = None

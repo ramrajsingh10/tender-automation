@@ -6,13 +6,8 @@
       "type": "shell",
       "command": "npm",
       "args": ["run", "frontend:dev"],
-      "options": {
-        "cwd": ""
-      },
-      "group": {
-        "kind": "build",
-        "isDefault": true
-      },
+      "options": { "cwd": "" },
+      "group": { "kind": "build", "isDefault": true },
       "problemMatcher": []
     },
     {
@@ -20,51 +15,62 @@
       "type": "shell",
       "command": "npm",
       "args": ["run", "lint"],
-      "options": {
-        "cwd": ""
-      },
+      "options": { "cwd": "" },
       "problemMatcher": []
     },
     {
-      "label": "gcloud: deploy api-public",
+      "label": "gcloud: deploy backend",
       "type": "shell",
       "command": "gcloud",
       "args": [
         "run",
         "deploy",
-        "api-public",
+        "tender-backend",
         "--source",
-        "./services/api-public",
+        "./backend",
         "--region",
         "us-central1",
         "--allow-unauthenticated"
       ],
-      "options": {
-        "cwd": ""
-      },
+      "options": { "cwd": "" },
       "problemMatcher": []
     },
     {
-      "label": "gcloud: deploy api-private",
+      "label": "gcloud: deploy orchestrator",
       "type": "shell",
       "command": "gcloud",
       "args": [
         "run",
         "deploy",
-        "api-private",
+        "orchestrator",
         "--source",
-        "./services/api-private",
+        "./services/orchestrator",
         "--region",
         "us-central1",
         "--no-allow-unauthenticated"
       ],
-      "options": {
-        "cwd": ""
-      },
+      "options": { "cwd": "" },
       "problemMatcher": []
     },
     {
-      "label": "python: test api-public",
+      "label": "gcloud: deploy ingest-worker",
+      "type": "shell",
+      "command": "gcloud",
+      "args": [
+        "run",
+        "deploy",
+        "ingest-worker",
+        "--source",
+        "./services/ingest_worker",
+        "--region",
+        "us-central1",
+        "--no-allow-unauthenticated"
+      ],
+      "options": { "cwd": "" },
+      "problemMatcher": []
+    },
+    {
+      "label": "python: test backend",
       "type": "shell",
       "command": "powershell",
       "args": [
@@ -72,15 +78,13 @@
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        "python -m pip install -r services/api-public/requirements.txt; python -m pip install pytest; pytest services/api-public"
+        "python -m pip install -r backend/requirements.txt; python -m pip install pytest; pytest backend"
       ],
-      "options": {
-        "cwd": ""
-      },
+      "options": { "cwd": "" },
       "problemMatcher": []
     },
     {
-      "label": "python: test api-private",
+      "label": "python: test orchestrator",
       "type": "shell",
       "command": "powershell",
       "args": [
@@ -88,11 +92,9 @@
         "-ExecutionPolicy",
         "Bypass",
         "-Command",
-        "python -m pip install -r services/api-private/requirements.txt; python -m pip install pytest; pytest services/api-private"
+        "python -m pip install -r services/orchestrator/requirements.txt; python -m pip install pytest; pytest services/orchestrator"
       ],
-      "options": {
-        "cwd": ""
-      },
+      "options": { "cwd": "" },
       "problemMatcher": []
     }
   ]

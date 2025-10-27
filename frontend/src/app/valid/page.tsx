@@ -5,6 +5,7 @@ import {
   getPlaybookResults,
   getTenderStatus,
   queryRag,
+  deleteRagFiles,
   PlaybookRun,
   RagQueryRequest,
   RagQueryResponse,
@@ -67,6 +68,8 @@ export default function ValidationPage() {
   const [isRagLoading, setIsRagLoading] = useState(false);
   const [ragError, setRagError] = useState<string | null>(null);
   const [isClientReady, setIsClientReady] = useState(false);
+  const [isDeletingRagFiles, setIsDeletingRagFiles] = useState(false);
+  const [ragDeleteError, setRagDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -103,6 +106,25 @@ export default function ValidationPage() {
       setPlaybookError((err as Error).message);
     } finally {
       setIsPlaybookLoading(false);
+    }
+  };
+
+  const handleRemoveRagFiles = async () => {
+    if (!tenderId) {
+      return;
+    }
+    setRagDeleteError(null);
+    setIsDeletingRagFiles(true);
+    try {
+      await deleteRagFiles(tenderId);
+      await loadStatus(tenderId);
+      setPlaybookRun(null);
+    } catch (err) {
+      setRagDeleteError(
+        err instanceof Error ? err.message : "Failed to remove RAG files.",
+      );
+    } finally {
+      setIsDeletingRagFiles(false);
     }
   };
 
@@ -350,6 +372,47 @@ export default function ValidationPage() {
           ) : null}
         </div>
       </section>
+
+      {tenderStatus?.ragFiles?.length ? (
+        <section className="rounded-lg border border-border bg-card p-6 shadow-sm">
+          <header className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-medium">RAG corpus artifacts</h2>
+              <p className="text-sm text-muted-foreground">
+                Review or remove the RagFile handles generated during ingestion.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleRemoveRagFiles}
+              className="inline-flex items-center justify-center rounded-md border border-muted px-3 py-2 text-xs font-medium text-muted-foreground transition hover:bg-muted disabled:opacity-60"
+              disabled={isDeletingRagFiles}
+            >
+              {isDeletingRagFiles
+                ? "Removing from corpus�?�"
+                : "Remove from RAG corpus"}
+            </button>
+          </header>
+          <ul className="mt-4 space-y-2 text-xs text-muted-foreground">
+            {tenderStatus.ragFiles.map((item) => (
+              <li key={item.ragFileName}>
+                <span className="font-mono text-foreground">
+                  {item.ragFileName}
+                </span>
+                {item.sourceUri ? (
+                  <span className="text-muted-foreground">
+                    {" "}
+                    �+' {item.sourceUri}
+                  </span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+          {ragDeleteError ? (
+            <p className="mt-3 text-xs text-destructive">{ragDeleteError}</p>
+          ) : null}
+        </section>
+      ) : null}
 
       <section className="rounded-lg border border-border bg-card p-6 shadow-sm">
         <div className="flex items-center justify-between gap-3">

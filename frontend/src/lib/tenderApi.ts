@@ -1,5 +1,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 export type TenderStatus = 'uploading' | 'uploaded' | 'parsing' | 'parsed' | 'failed';
+export type RagIngestionStatus = 'pending' | 'running' | 'done' | 'failed';
 
 export interface UploadLimits {
   maxFileSizeBytes?: number;
@@ -30,6 +31,23 @@ export interface ParseMetadata {
   error?: string | null;
 }
 
+export interface RagFile {
+  ragFileName: string;
+  sourceUri?: string | null;
+  ragCorpusPath?: string | null;
+  branch?: string | null;
+  dataStorePath?: string | null;
+  createdAt?: string | null;
+}
+
+export interface RagIngestionMetadata {
+  status: RagIngestionStatus;
+  operationName?: string | null;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  lastError?: string | null;
+}
+
 export interface TenderSessionResponse {
   tenderId: string;
   status: TenderStatus;
@@ -37,12 +55,16 @@ export interface TenderSessionResponse {
   uploadLimits?: UploadLimits;
   files: FileRecord[];
   parse: ParseMetadata;
+  ragIngestion: RagIngestionMetadata;
+  ragFiles: RagFile[];
 }
 
 export interface CreateTenderResponse {
   tenderId: string;
   status: TenderStatus;
   uploadLimits: UploadLimits;
+  ragIngestion: RagIngestionMetadata;
+  ragFiles: RagFile[];
 }
 
 export interface UploadInitResponse {
@@ -235,3 +257,29 @@ export async function getPlaybookResults(tenderId: string): Promise<PlaybookRun>
     cache: 'no-store',
   });
 }
+
+export interface RagIngestionResponse {
+  ragIngestion: RagIngestionMetadata;
+  ragFiles: RagFile[];
+}
+
+export async function getRagIngestionStatus(tenderId: string): Promise<RagIngestionResponse> {
+  return request<RagIngestionResponse>(`/api/tenders/${tenderId}/ingestion`, {
+    method: 'GET',
+    cache: 'no-store',
+  });
+}
+
+export async function retryRagIngestion(tenderId: string): Promise<RagIngestionResponse> {
+  return request<RagIngestionResponse>(`/api/tenders/${tenderId}/ingestion/retry`, {
+    method: 'POST',
+  });
+}
+
+export async function deleteRagFiles(tenderId: string): Promise<RagIngestionResponse> {
+  return request<RagIngestionResponse>(`/api/tenders/${tenderId}/rag-files`, {
+    method: 'DELETE',
+  });
+}
+
+

@@ -1,1 +1,0 @@
-"""Annexure extractor package."""

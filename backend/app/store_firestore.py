@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 from uuid import UUID, uuid4
 
 from google.cloud import firestore
@@ -25,6 +25,10 @@ class FirestoreTenderStore:
     def _deserialize(data: dict | None) -> schemas.TenderSession:
         if not data:
             raise KeyError("Tender session not found")
+        if "ragIngestion" not in data:
+            data["ragIngestion"] = schemas.RagIngestionMetadata().model_dump(by_alias=True)
+        if "ragFiles" not in data:
+            data["ragFiles"] = []
         return schemas.TenderSession.model_validate(data)
 
     def _get_session(self, tender_id: UUID) -> schemas.TenderSession:
@@ -43,6 +47,8 @@ class FirestoreTenderStore:
             created_at=datetime.now(timezone.utc),
             created_by=created_by,
             files=[],
+            rag_ingestion=schemas.RagIngestionMetadata(),
+            rag_files=[],
         )
         self._write_session(session)
         return session
@@ -131,5 +137,21 @@ class FirestoreTenderStore:
         session.parse.completed_at = now
         session.parse.last_checked_at = now
         session.parse.error = error_message
+        self._write_session(session)
+        return session
+
+    def update_rag_ingestion(self, tender_id: UUID, **updates: Any) -> schemas.TenderSession:
+        session = self._get_session(tender_id)
+        rag_ingestion = session.rag_ingestion.model_copy()
+        for field, value in updates.items():
+            if hasattr(rag_ingestion, field):
+                setattr(rag_ingestion, field, value)
+        session.rag_ingestion = rag_ingestion
+        self._write_session(session)
+        return session
+
+    def set_rag_files(self, tender_id: UUID, rag_files: list[schemas.RagFile]) -> schemas.TenderSession:
+        session = self._get_session(tender_id)
+        session.rag_files = rag_files
         self._write_session(session)
         return session

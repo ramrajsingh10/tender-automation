@@ -7,8 +7,7 @@
 ## Repository Overview
 - `frontend/` - Next.js 15 application deployed to Firebase Hosting.
 - `backend/` - FastAPI service orchestrating tender uploads and managed Vertex RAG playbooks.
-- `services/` - Cloud Run services (ingest_api, orchestrator, artifact-builder (legacy), qa_loop placeholder, rag-trigger-poc).
-- `agents/` - Workspace for background automation (currently a placeholder).
+- `services/` - Cloud Run services (orchestrator, ingest_worker).
 - `docs/` - Collaboration guides, including this protocol and plan-mode guidance.
 
 ## Tech Stack & Tooling
@@ -29,11 +28,11 @@
   - `npm run frontend:lint`
   - `npm run frontend:build`
   - `npm run frontend:start`
-- Cloud Run deploy (see `.vscode/tasks.json` for canned commands targeting each service).
+- Cloud Run deploy (see `.vscode/tasks.json` for canned commands targeting backend, orchestrator, and ingest worker).
 - Python service smoke tests (virtual environment recommended):
   ```powershell
-  python -m pip install -r services/<service-name>/requirements.txt pytest
-  pytest services/<service-name>
+  python -m pip install -r backend/requirements.txt pytest
+  pytest backend
   ```
 
 ## Collaboration Workflow

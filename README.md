@@ -1,74 +1,70 @@
 # Tender Automation Monorepo
 
-This repository hosts the Tender Automation frontend, backend services, and automation agents in a single monorepo. The web experience is a Next.js app deployed to Firebase Hosting, while Python FastAPI services are deployed to Google Cloud Run. Additional automation will live under the agents/ hierarchy.
+This repository hosts the Tender Automation frontend plus the services that power the managed Vertex RAG pipeline. The web experience is a Next.js app deployed to Firebase Hosting, while Python FastAPI services (backend API, orchestrator, ingestion worker) are deployed to Google Cloud Run.
+
+> **Vision snapshot:** The current implementation covers upload -> ingestion -> Vertex RAG playbook execution -> validation. Future phases (detailed in `docs/Knowledgedeck.md`) will add OCR enrichment, annexure generation, baseline project plans, task/RACI management, automated pre-flight checks, and Google Drive provisioning.
 
 ## Directory Layout
-- frontend  Next.js 15 application and supporting assets.
-- services/  FastAPI services deployed to Cloud Run (ingest_api, orchestrator, artifact-builder (legacy), qa_loop (placeholder), rag-trigger-poc).
-- agents/  Placeholder for background agents (e.g., agents/ingestion).
-- docs/  Repository policies and operating procedures (codex-context.md, codex-plan_mode.md).
-- .vscode/  Task definitions for local workflows, Cloud Run deployments, and Python testing.
+- `frontend/` - Next.js 15 application and supporting assets.
+- `backend/` - FastAPI backend service.
+- `services/` - FastAPI services deployed to Cloud Run (`orchestrator`, `ingest_worker`).
+- `docs/` - Repository policies, architecture notes, and historical context.
+- `.vscode/` - Command palette tasks for local workflows and Cloud Run deployments.
 
 ## Prerequisites
 - Node.js 20+ and npm 10 with workspaces enabled.
-- Python 3.11+ for FastAPI services (recommend using a virtual environment).
-- Firebase CLI and Google Cloud SDK authenticated against the tender-automation-1008 project.
+- Python 3.11+ for FastAPI services (use a virtual environment locally).
+- Firebase CLI and Google Cloud SDK authenticated against the `tender-automation-1008` project.
 
 ## Installation
 ```bash
 npm install
 ```
-This bootstraps workspace dependencies (currently the frontend package).
+This bootstraps workspace dependencies (currently the frontend package). Run the command from the repository root.
 
 ## Frontend
 - Start dev server: `npm run frontend:dev`
-  - Lint: `npm run frontend:lint`
-  - Production build: `npm run frontend:build`
-  - Start production server locally: `npm run frontend:start`
-- For local backend testing, create `frontend/.env.development.local` with overrides (e.g. `NEXT_PUBLIC_TENDER_BACKEND_URL=http://localhost:8000`). The checked-in `.env.local` is used for deployments and points at the production API.
+- Lint: `npm run frontend:lint`
+- Production build: `npm run frontend:build`
+- Launch local production preview: `npm run frontend:start`
 
-Environment variables for the web app live in frontend/.env.example; copy to frontend/.env.local for local development.
+Environment variables for the web app live in `frontend/.env.example`. Copy that file to `frontend/.env.local` (or `frontend/.env.development.local`) and set `NEXT_PUBLIC_TENDER_BACKEND_URL` when targeting a non-production backend.
 
-## Backend Services
-Each FastAPI service includes a `main.py` and `requirements.txt`. Run any service locally with:
+## Backend and Supporting Services
+The FastAPI backend lives in `backend/`. Run it locally with:
 
 ```bash
-uvicorn main:app --app-dir services/<service-name> --reload
+uvicorn app.main:app --app-dir backend --reload
 ```
 
-Deploy the services to Cloud Run with the provided VS Code tasks or by running the `gcloud run deploy` commands defined in `.vscode/tasks.json`.
+Key responsibilities:
+- Tender processing: `POST /api/tenders/{tenderId}/process` imports the uploaded bundle into Vertex RAG, runs the managed playbook, and writes results JSON to Cloud Storage. Retrieve answers via `GET /api/tenders/{tenderId}/playbook`.
+- Ad-hoc questions: `POST /api/rag/query` proxies a single prompt to the orchestrator, which calls Agent Builder + Gemini.
+- RAG ingestion worker: `services/ingest_worker/` (Cloud Run) uses `VertexRagDataServiceClient.import_rag_files` to ingest documents once uploads finish.
+- Orchestrator: `services/orchestrator/` (Cloud Run) reuses RagFile IDs, executes the playbook, and stores outputs in `parsedtenderdata`.
 
-- Tender processing: `POST /api/tenders/{tenderId}/process` imports the uploaded bundle into Vertex RAG, runs the managed playbook, and writes the results JSON to Cloud Storage. Retrieve the latest answers via `GET /api/tenders/{tenderId}/playbook`.
-- Ad-hoc questions: `POST /api/rag/query` proxies a single prompt to Agent Builder for exploration or validation.
+Deploy the backend, orchestrator, and ingest worker to Cloud Run with the VS Code tasks (`.vscode/tasks.json`) or manually via the documented `gcloud run deploy` commands.
 
 ## Testing
-- Web lint/build checks: `npm run frontend:lint` and `npm run frontend:build`.
-- Python service smoke tests (from a virtual environment):
+- Frontend lint/build checks: `npm run frontend:lint`, `npm run frontend:build`.
+- Backend smoke tests (from a virtual environment):
   ```bash
-  python -m pip install -r services/<service-name>/requirements.txt pytest
-  pytest services/<service-name>
+  python -m pip install -r backend/requirements.txt pytest
+  pytest backend
   ```
-- VS Code tasks execute the same installation + pytest flow for individual services.
+- Orchestrator and ingest worker tests follow the same pattern using their `requirements.txt`.
+- VS Code tasks `python: test backend` and `python: test orchestrator` automate dependency installation plus pytest.
 
-## Agents
-agents/ contains scaffolding for future worker-style automation. Add one subdirectory per agent, document runtime requirements, and supply env templates (.env.example) alongside the code.
-
-## Managed RAG Roadmap
-We now rely on Vertex AI Agent Builder for document ingestion and retrieval.  
-High-level plans, phased rollout, and open questions live in [`docs/NewApproach.md`](docs/NewApproach.md).
-
-## Deployment
-- **Frontend**: firebase.json points Hosting to frontend and deploys the framework build artifact in frontend/.next. Run `npm run frontend:build` before firebase deploy --only hosting.
-- **GitLab CI**: ensure the build job exports `NEXT_PUBLIC_TENDER_BACKEND_URL=https://tender-backend-981270825391.us-central1.run.app` (for example by setting a protected CI/CD variable) so production bundles never fall back to `http://localhost:8000`.
-- **Services**: Use the gcloud tasks in .vscode/tasks.json or replicate the commands in CI/CD to deploy each FastAPI service to Cloud Run (us-central1).
-- **Service accounts**: Follow [`docs/service-accounts.md`](docs/service-accounts.md) when assigning IAM and attaching service accounts to Cloud Run services.
-- **Google Drive**: Set `GOOGLE_DRIVE_PARENT_FOLDER_ID=0AIIJEYSn69gTUk9PVA` (Tenders shared drive) for the artifact builder service; Secret Manager usage is outlined in `services/artifact-builder/README.md`.
-- **Vertex AI (Agent Builder)**: Ensure service accounts have `discoveryengine.admin` and `discoveryengine.user` roles for document ingestion and query access. Enable `discoveryengine.googleapis.com`, capture the data store ID for `VERTEX_RAG_DATA_STORE_ID`, and watch the `text-multilingual-embedding-002` quota (`online_prediction_requests_per_base_model`).
-- **Backend ↔ Orchestrator**: Set `ORCHESTRATOR_BASE_URL` so the tender backend can forward `/api/rag/query` requests to the orchestrator proxy.
+## Deployment Overview
+- **Frontend**: `firebase deploy --only hosting:tender-app` runs `next build --no-lint`, exports static assets, and uploads to Firebase Hosting.
+- **Services**: Use `.vscode/tasks.json` or direct CLI calls to deploy each Cloud Run service in `us-central1`.
+- **Service accounts**: Follow [`docs/service-accounts.md`](docs/service-accounts.md) for IAM bindings.
+- **Vertex AI (Agent Builder)**: Ensure service accounts have Vertex discovery/Agent Builder roles. Confirm `VERTEX_RAG_CORPUS_PATH`, `VERTEX_RAG_CORPUS_LOCATION`, and `VERTEX_RAG_GEMINI_MODEL` environment variables are set on orchestrator.
+- **Backend <-> Orchestrator**: Configure `ORCHESTRATOR_BASE_URL` so the backend can forward `/api/rag/query` and playbook requests securely (Google-signed ID token).
 
 ## Additional Documentation
-- docs/codex-context.md outlines collaboration and workflow expectations.
-- docs/codex-plan_mode.md captures the Plan Mode operating instructions for Codex.
-- docs/NewApproach.md documents the managed Vertex RAG pipeline.
-- docs/OldApproach.md archives the legacy DocAI + custom RAG workflow and issues we
-  encountered along the way.
+- [`docs/Knowledgedeck.md`](docs/Knowledgedeck.md) - comprehensive architecture, desired product flow, and roadmap (kept current).
+- [`docs/NewApproach.md`](docs/NewApproach.md) - managed Vertex RAG architecture runbook.
+- [`docs/task_list.md`](docs/task_list.md) - chronological work log plus outstanding tasks mapped to the long-term product vision.
+- [`docs/service-accounts.md`](docs/service-accounts.md) - Cloud Run service account matrix.
+- Legacy materials (DocAI flow, extractor architecture, historical Firestore schema) remain under `docs/history/` for reference.

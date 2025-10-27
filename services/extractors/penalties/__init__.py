@@ -1,1 +1,0 @@
-"""Penalties extractor package."""

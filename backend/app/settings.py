@@ -41,9 +41,15 @@ class OrchestratorSettings:
     base_url: str = os.environ.get("ORCHESTRATOR_BASE_URL", "")
     rag_timeout_seconds: int = int(os.environ.get("RAG_CLIENT_TIMEOUT_SECONDS", "30"))
 
+@dataclass(frozen=True)
+class IngestionSettings:
+    worker_url: str = os.environ.get("INGEST_WORKER_URL", "")
+    timeout_seconds: int = int(os.environ.get("INGEST_WORKER_TIMEOUT_SECONDS", "60"))
+
 
 upload_settings = UploadSettings()
 storage_settings = StorageSettings()
 api_settings = APISettings()
 store_settings = StoreSettings()
 orchestrator_settings = OrchestratorSettings()
+ingestion_settings = IngestionSettings()

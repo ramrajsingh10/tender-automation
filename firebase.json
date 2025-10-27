@@ -2,10 +2,19 @@
   "hosting": [
     {
       "target": "tender-app",
-      "source": "frontend",
-      "frameworksBackend": {
-        "region": "us-central1"
-      }
+      "public": "frontend/out",
+      "predeploy": [
+        "npm --prefix frontend install --legacy-peer-deps",
+        "npm --prefix frontend run build"
+      ],
+      "ignore": [
+        "firebase.json",
+        "**/.*",
+        "**/node_modules/**"
+      ],
+      "cleanUrls": true,
+      "trailingSlash": false
     }
   ]
 }
+

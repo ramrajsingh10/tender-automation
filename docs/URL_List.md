@@ -1,20 +1,20 @@
 ## Active Services
 
-- **ingest-api**  
-  Default URL: https://ingest-api-lblqj4e2ba-uc.a.run.app  
-  Legacy URL: https://ingest-api-981270825391.us-central1.run.app
+- **ingest-worker**  
+  Primary URL: https://ingest-worker-981270825391.us-central1.run.app  
+  Notes: Receives upload completion notifications and imports bundles into Vertex RAG.
 
 - **orchestrator**  
-  Default URL: https://orchestrator-lblqj4e2ba-uc.a.run.app  
-  Legacy URL: https://orchestrator-981270825391.us-central1.run.app
+  Primary URL: https://orchestrator-981270825391.us-central1.run.app  
+  Notes: Runs Gemini playbooks, handles `/rag/query`, writes results to Cloud Storage.
 
 - **tender-backend**  
-  Default URL: https://tender-backend-981270825391.us-central1.run.app  
-  Legacy URL: https://tender-backend-lblqj4e2ba-uc.a.run.app
+  Primary URL: https://tender-backend-981270825391.us-central1.run.app  
+  Notes: Public API for uploads, ingestion status, playbook triggers, and ad-hoc RAG questions.
 
 - **tender-automation (Firebase Hosting)**  
-  Default URL: https://tender-automation-1008.web.app  
-  SSR Function: https://ssrtenderautomation1008-lblqj4e2ba-uc.a.run.app
+  Primary URL: https://tender-automation-1008.web.app  
+  SSR Function (internal): https://ssrtenderautomation1008-981270825391.us-central1.run.app
 
 ## Managed RAG Corpus
 

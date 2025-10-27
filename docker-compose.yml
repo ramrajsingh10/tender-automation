@@ -9,20 +9,17 @@ x-python-service: &python-service
     - ./:/workspace
   command: >
     bash -c "pip install --no-cache-dir -r requirements.txt
-    && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+    && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"
 
 services:
-  ingest-api:
+  backend:
     <<: *python-service
-    container_name: ingest-api
-    working_dir: /workspace/services/ingest_api
+    container_name: tender-backend
+    working_dir: /workspace/backend
     env_file:
-      - config/docker-services.env.example
+      - .env.example
     ports:
-      - "8001:8000"
-    command: >
-      bash -c "pip install --no-cache-dir -r requirements.txt
-      && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+      - "8000:8000"
 
   orchestrator:
     <<: *python-service
@@ -32,93 +29,18 @@ services:
       - config/docker-services.env.example
     ports:
       - "8080:8000"
-    depends_on:
-      - extractor-deadlines
-      - extractor-emd
-      - extractor-requirements
-      - extractor-penalties
-      - extractor-annexures
-      - artifact-annexures
-      - qa-loop
     command: >
       bash -c "pip install --no-cache-dir -r requirements.txt
       && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
 
-  extractor-deadlines:
+  ingest-worker:
     <<: *python-service
-    container_name: extractor-deadlines
-    working_dir: /workspace/services/extractors/deadlines
+    container_name: ingest-worker
+    working_dir: /workspace/services/ingest_worker
     env_file:
       - config/docker-services.env.example
     ports:
-      - "8101:8000"
-    command: >
-      bash -c "pip install --no-cache-dir -r /workspace/services/extractors/requirements.txt
-      && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
-
-  extractor-emd:
-    <<: *python-service
-    container_name: extractor-emd
-    working_dir: /workspace/services/extractors/emd
-    env_file:
-      - config/docker-services.env.example
-    ports:
-      - "8102:8000"
-    command: >
-      bash -c "pip install --no-cache-dir -r /workspace/services/extractors/requirements.txt
-      && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
-
-  extractor-requirements:
-    <<: *python-service
-    container_name: extractor-requirements
-    working_dir: /workspace/services/extractors/requirements
-    env_file:
-      - config/docker-services.env.example
-    ports:
-      - "8103:8000"
-    command: >
-      bash -c "pip install --no-cache-dir -r /workspace/services/extractors/requirements.txt
-      && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
-
-  extractor-penalties:
-    <<: *python-service
-    container_name: extractor-penalties
-    working_dir: /workspace/services/extractors/penalties
-    env_file:
-      - config/docker-services.env.example
-    ports:
-      - "8104:8000"
-    command: >
-      bash -c "pip install --no-cache-dir -r /workspace/services/extractors/requirements.txt
-      && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
-
-  extractor-annexures:
-    <<: *python-service
-    container_name: extractor-annexures
-    working_dir: /workspace/services/extractors/annexures
-    env_file:
-      - config/docker-services.env.example
-    ports:
-      - "8105:8000"
-    command: >
-      bash -c "pip install --no-cache-dir -r /workspace/services/extractors/requirements.txt
-      && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
-
-  artifact-annexures:
-    <<: *python-service
-    container_name: artifact-annexures
-    working_dir: /workspace/services/artifact-builder
-    env_file:
-      - config/docker-services.env.example
-    ports:
-      - "8106:8000"
-
-  qa-loop:
-    <<: *python-service
-    container_name: qa-loop
-    working_dir: /workspace/services/qa_loop
-    ports:
-      - "8190:8000"
+      - "8700:8000"
     command: >
       bash -c "pip install --no-cache-dir -r requirements.txt
       && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"

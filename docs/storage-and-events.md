@@ -1,28 +1,20 @@
 # Storage, Agent Outputs, and Event Flow (Managed RAG)
 
-This document captures the storage layout and runtime flow for the new
-managed Vertex RAG pipeline. The previous Document AI normalization
-details now live in `docs/OldApproach.md`.
+This document captures the storage layout and runtime flow for the current managed Vertex RAG pipeline. Legacy Document AI notes remain in `docs/history/OldApproach.md`.
 
 ## Google Cloud Storage Layout
 
-We operate with three primary buckets (names remain configurable through
-environment variables):
+Three primary buckets (names remain configurable via environment variables):
 
 | Purpose | Default Bucket | Structure |
 | --- | --- | --- |
 | Raw document uploads | `rawtenderdata` | `/{tenderId}/{storedName}` |
 | Vertex RAG playbook results | `parsedtenderdata` | `/{tenderId}/rag/results-YYYYMMDDThhmmssZ.json` |
-| Generated artifacts (optional) | `tender-artifacts` | `/{tenderId}/{artifactType}/{version}/{fileName}` |
+| Generated artefacts (future) | `tender-artifacts` | `/{tenderId}/{artifactType}/{version}/{fileName}` |
 
-- **Raw uploads** hold the exact files users submit via the UI. Filenames are
-  sanitized and stored with UUID prefixes in `backend/app/routes/uploads.py`. Multiple
-  documents per tender are allowed.
-- **RAG results** contain the JSON emitted by the orchestrator after running the
-  managed Vertex AI playbook. Filenames are timestamped so each run is preserved.
-  The backend records `parse.outputUri` pointing at the most recent JSON file.
-- **Artifacts** continue to store annexure reproductions, compliance checklists,
-  and other generated deliverables. These are optional in the new flow.
+- **Raw uploads** hold the exact files submitted via the UI. Filenames are sanitised and stored with UUID prefixes in `backend/app/routes/uploads.py`.
+- **RAG results** contain the JSON emitted by the orchestrator after running the managed Vertex AI playbook. Filenames are timestamped so each run is preserved. The backend records `parse.outputUri` pointing at the latest JSON file.
+- **Artefacts** will store annexures, checklists, and generated plans once those services come online.
 
 ## Vertex RAG Playbook Output
 
@@ -41,8 +33,6 @@ Each JSON file written under `gs://parsedtenderdata/{tenderId}/rag/` follows thi
           "text": "Bids must be submitted by 12 November 2025 at 3:00 PM IST.",
           "citations": [
             {
-              "startIndex": 42,
-              "endIndex": 93,
               "sources": [
                 {
                   "reference": {
@@ -50,7 +40,10 @@ Each JSON file written under `gs://parsedtenderdata/{tenderId}/rag/` follows thi
                     "title": "Section 4: Submission Instructions",
                     "uri": "gs://rawtenderdata/827b7205-e857-400b-bdc4-12c79849db36/tender.pdf",
                     "chunkContents": [
-                      {"content": "Submissions are due by 12 November 2025 at 15:00 hrs IST.", "pageIdentifier": "Page 9"}
+                      {
+                        "content": "Submissions are due by 12 November 2025 at 15:00 hrs IST.",
+                        "pageIdentifier": "Page 9"
+                      }
                     ]
                   }
                 }
@@ -72,34 +65,23 @@ Each JSON file written under `gs://parsedtenderdata/{tenderId}/rag/` follows thi
 }
 ```
 
-The frontend validation workspace and backend `GET /api/tenders/{tenderId}/playbook`
-endpoint surface this data directly.
+The frontend validation workspace and backend `GET /api/tenders/{tenderId}/playbook` endpoint surface this data directly.
 
 ## Event Flow Summary
 
-1. **Upload:** The user drops one or more files in the UI. Files land in
-   `gs://rawtenderdata/{tenderId}/`.
-2. **Trigger:** When the BA clicks “Process”, the backend calls the orchestrator’s
-   `/rag/playbook` endpoint with the list of raw GCS URIs.
-3. **Vertex RAG import & questions:** The orchestrator
-   - Imports the raw bundle into the configured `ragCorpora` using the
-     Vertex Rag Data API,
-   - Executes the curated question set (`DEFAULT_PLAYBOOK`) via Discovery Engine
-     search,
-   - Writes the JSON payload shown above to `parsedtenderdata/{tenderId}/rag/`,
-   - Deletes the imported RagFiles so the corpus is clean for the next run.
-4. **Surfacing results:** The backend updates the tender session status to `parsed`
-   and records the `parse.outputUri`. The validation UI reads the JSON for review,
-   and the BA can re-run the playbook at any time.
+1. **Upload** - The user drops one or more files in the UI. Files land in `gs://rawtenderdata/{tenderId}/`.
+2. **Trigger** - When "Process" is clicked (or automatically after ingestion completes in future iterations), the backend calls the orchestrator `/rag/playbook` endpoint once ingestion reports status `done`.
+3. **Vertex RAG import and questions** - The orchestrator:
+   - Imports the raw bundle into the configured corpus when RagFile IDs are missing.
+   - Executes the curated question set via Vertex RAG retrieval and Gemini extraction.
+   - Writes the JSON payload above to `parsedtenderdata/{tenderId}/rag/`.
+   - Returns RagFile handles to the backend so they can be reused on subsequent runs.
+4. **Surfacing results** - The backend updates the tender session status to `parsed` and records the `parse.outputUri`. The validation UI reads the JSON for review, and the BA can re-run the playbook at any time. A delete action triggers `/rag/files/delete` if the operator wants to remove RagFiles after validation.
 
 ### Multi-file Tenders
 
-The orchestrator imports every `gs://rawtenderdata/{tenderId}/{storedName}` supplied
-in the request. Vertex Agent Builder chunking handles the combined corpus, so answers
-reflect all uploaded documents.
+The orchestrator imports every `gs://rawtenderdata/{tenderId}/{storedName}` supplied in the request. Vertex Agent Builder chunking handles the combined corpus, so answers reflect all uploaded documents.
 
 ### Legacy Document AI Flow
 
-The original Document AI normalization pipeline and Firestore schema are preserved
-for reference in `docs/OldApproach.md`. No new data is written to `docai/output/`
-under the managed RAG workflow.
+The original Document AI normalisation pipeline and Firestore schema are archived in `docs/history/OldApproach.md`. No new data is written to `docai/output/` under the managed RAG workflow.

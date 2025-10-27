@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import re
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -8,19 +8,20 @@ from uuid import UUID, uuid4
 from fastapi import APIRouter, HTTPException
 
 from .. import schemas
+from ..services.ingestion_client import IngestionClientError
+from ..services.ingestion_manager import start_ingestion_if_ready
 from ..services.storage import StorageServiceError, storage_service
 from ..settings import storage_settings, upload_settings
 from ..store import store
 
 router = APIRouter(prefix="/api/tenders/{tender_id}/uploads", tags=["uploads"])
 
-_INVALID_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
-
-
+logger = logging.getLogger(__name__)
 def _sanitize_filename(filename: str) -> str:
     """Return a filesystem-safe filename without path components."""
     basename = Path(filename).name
-    sanitized = _INVALID_FILENAME_CHARS.sub("_", basename).strip("._")
+    allowed = set("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789._-")
+    sanitized = "".join(char if char in allowed else "_" for char in basename).strip("._")
     return sanitized or "file"
 
 
@@ -118,4 +119,10 @@ def complete_upload(
         )
 
     store.add_or_update_file(tender_id, updated)
+    try:
+        start_ingestion_if_ready(tender_id)
+    except IngestionClientError as exc:
+        logger.debug("RAG ingestion trigger failed for tender %s: %s", tender_id, exc)
     return updated
+
+

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import threading
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 from uuid import UUID, uuid4
 
 from . import schemas
@@ -28,6 +28,8 @@ class TenderStore:
             created_at=datetime.now(timezone.utc),
             created_by=created_by,
             files=[],
+            rag_ingestion=schemas.RagIngestionMetadata(),
+            rag_files=[],
         )
         with self._lock:
             self._sessions[tender_id] = session
@@ -124,6 +126,22 @@ class TenderStore:
             session.parse.completed_at = now
             session.parse.last_checked_at = now
             session.parse.error = error_message
+            return session.model_copy(deep=True)
+
+    def update_rag_ingestion(self, tender_id: UUID, **updates: Any) -> schemas.TenderSession:
+        with self._lock:
+            session = self._sessions[tender_id]
+            rag_ingestion = session.rag_ingestion.model_copy()
+            for field, value in updates.items():
+                if hasattr(rag_ingestion, field):
+                    setattr(rag_ingestion, field, value)
+            session.rag_ingestion = rag_ingestion
+            return session.model_copy(deep=True)
+
+    def set_rag_files(self, tender_id: UUID, rag_files: list[schemas.RagFile]) -> schemas.TenderSession:
+        with self._lock:
+            session = self._sessions[tender_id]
+            session.rag_files = rag_files
             return session.model_copy(deep=True)
 
 
