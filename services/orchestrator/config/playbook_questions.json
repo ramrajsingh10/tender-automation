@@ -1,0 +1,14 @@
+[
+  {
+    "id": "document_id",
+    "display": "Extract the document identifier exactly as stated.",
+    "prompt": "Extract the document identifier (tender ID / RFP ID / reference number / RFP No.) exactly as stated in the tender pack. Ignore placeholder or blank lines that contain only underscores or tokens such as NA, N.A., or Not Available. Return the answer as a JSON array of objects with fields 'label' and 'value' capturing the filled-in identifier. Example: [{\"label\": \"RFP Number\", \"value\": \"RFP No. 001/MPSAPS/2025\"}].",
+    "pageSize": 4
+  },
+  {
+    "id": "submission_deadlines",
+    "display": "List submission deadlines with dates and times.",
+    "prompt": "List every submission related deadline with date and time. Include the schedule label (for example 'Last Date for Submission') and the precise date/time exactly as written. Skip rows that do not contain an actual date or time or that are left blank. Return the answer as a JSON array of objects with fields 'label' and 'value'. Example: [{\"label\": \"Last Date for Submission\", \"value\": \"15/09/2025 15:00\"}].",
+    "pageSize": 10
+  }
+]

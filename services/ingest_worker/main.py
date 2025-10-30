@@ -30,6 +30,8 @@ class Settings:
     firestore_collection: str = os.getenv("TENDERS_COLLECTION", "tenders")
     pubsub_topic: str = os.getenv("INGEST_TOPIC", "")
     rag_location: str = os.getenv("VERTEX_RAG_CORPUS_LOCATION", "")
+    rag_chunk_size_tokens: int = int(os.getenv("VERTEX_RAG_CHUNK_SIZE_TOKENS", "0"))
+    rag_chunk_overlap_tokens: int = int(os.getenv("VERTEX_RAG_CHUNK_OVERLAP_TOKENS", "0"))
 
 
 settings = Settings()
@@ -107,9 +109,15 @@ async def ingest_tender(tender_id: str, gcs_uris: List[str]) -> Dict[str, Any]:
     )
     _publish_status(tender_id, "running")
 
+    import_config = {"gcs_source": {"uris": gcs_uris}}
+    if settings.rag_chunk_size_tokens > 0:
+        chunk_kwargs = {"chunk_size": settings.rag_chunk_size_tokens}
+        if settings.rag_chunk_overlap_tokens > 0:
+            chunk_kwargs["chunk_overlap"] = settings.rag_chunk_overlap_tokens
+        import_config["rag_file_chunking_config"] = aiplatform_v1beta1.RagFileChunkingConfig(**chunk_kwargs)  # type: ignore[attr-defined]
     request = aiplatform_v1beta1.ImportRagFilesRequest(
         parent=settings.rag_corpus_path,
-        import_rag_files_config={"gcs_source": {"uris": gcs_uris}},
+        import_rag_files_config=import_config,
     )
     operation = client.import_rag_files(request=request)
     operation_name = getattr(getattr(operation, "operation", None), "name", None)

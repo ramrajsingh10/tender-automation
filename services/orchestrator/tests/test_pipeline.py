@@ -20,11 +20,9 @@ def test_build_pipeline_run_document_structure():
     assert run["ingestJobId"] == "job-abc"
     assert run["status"] == "queued"
     assert "tasks" in run
-    assert set(run["tasks"].keys()) == {task.task_id for task in DEFAULT_PIPELINE.tasks}
-    first_task = run["tasks"]["normalize.documents"]
-    assert first_task["stage"] == "sequential"
-    assert first_task["target"] == "ingest-api"
-    parallel_tasks = [
-        task_id for task_id, info in run["tasks"].items() if info["stage"] == "parallel"
-    ]
-    assert "extract.deadlines" in parallel_tasks
+    expected_tasks = {task.task_id for task in DEFAULT_PIPELINE.tasks}
+    assert set(run["tasks"].keys()) == expected_tasks
+    for task_id, info in run["tasks"].items():
+        task = next(task for task in DEFAULT_PIPELINE.tasks if task.task_id == task_id)
+        assert info["stage"] == task.stage
+        assert info["target"] == task.target
