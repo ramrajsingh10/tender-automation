@@ -30,9 +30,19 @@ class RagCitation(BaseModel):
     sources: List[Dict[str, str]] = Field(default_factory=list)
 
 
+class AnswerEvidence(BaseModel):
+    docId: str | None = None
+    docTitle: str | None = None
+    docUri: str | None = None
+    pageLabel: str | None = None
+    snippet: str | None = None
+    distance: float | None = None
+
+
 class RagAnswer(BaseModel):
     text: str
     citations: List[RagCitation] = Field(default_factory=list)
+    evidence: List[AnswerEvidence] = Field(default_factory=list)
 
 
 class RagDocument(BaseModel):
@@ -46,6 +56,9 @@ class RagDocument(BaseModel):
 class RagQueryResponse(BaseModel):
     answers: List[RagAnswer] = Field(default_factory=list)
     documents: List[RagDocument] = Field(default_factory=list)
+
+    class Config:
+        arbitrary_types_allowed = True
 
 
 class RagQueryRequest(BaseModel):

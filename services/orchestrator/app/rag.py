@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+import statistics
 import time
 from collections.abc import Iterable
 from threading import Lock
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional, Set
 
 from google.api_core import exceptions as google_exceptions
+from google.protobuf.json_format import MessageToDict
 
 try:
     from google.cloud import aiplatform_v1beta1  # type: ignore
@@ -15,7 +17,7 @@ except ImportError:  # pragma: no cover - optional dependency
 
 from .clients import get_rag_data_client, get_rag_service_client
 from .config import settings
-from .models import RagDocument, RagQueryRequest, RagQueryResponse, RagAnswer, RagCitation
+from .models import AnswerEvidence, RagDocument, RagQueryRequest, RagQueryResponse, RagAnswer, RagCitation
 from .generative import run_generative_agent
 
 logger = logging.getLogger(__name__)
@@ -173,7 +175,7 @@ def _extract_project_from_resource(resource_path: str) -> str | None:
     return project or None
 
 
-def execute_vertex_search(request: RagQueryRequest) -> RagQueryResponse:
+def execute_vertex_search(request: RagQueryRequest) -> Tuple[RagQueryResponse, List[object]]:
     global _rag_file_filter_supported
     client = get_rag_service_client()
     if not settings.vertex_rag_corpus_path:
@@ -191,6 +193,7 @@ def execute_vertex_search(request: RagQueryRequest) -> RagQueryResponse:
 
     cache_key = _get_cache_key(request.tenderId, request.question, page_size, initial_gcs_uris, initial_rag_file_ids)
     cached_contexts = _get_cached_contexts(cache_key)
+    cache_hit = cached_contexts is not None
 
     rag_resource = aiplatform_v1beta1.RetrieveContextsRequest.VertexRagStore.RagResource(  # type: ignore[attr-defined]
         rag_corpus=settings.vertex_rag_corpus_path,
@@ -220,6 +223,7 @@ def execute_vertex_search(request: RagQueryRequest) -> RagQueryResponse:
         vertex_rag_store=vertex_rag_store,
     )
     contexts: List[object]
+    start_time = time.time()
     if cached_contexts is not None:
         contexts = list(cached_contexts)
     else:
@@ -252,21 +256,24 @@ def execute_vertex_search(request: RagQueryRequest) -> RagQueryResponse:
                         settings.vertex_rag_corpus_path,
                         inner_exc,
                     )
-                    return RagQueryResponse(answers=[], documents=[])
+                    return RagQueryResponse(answers=[], documents=[]), []
             else:
                 logger.warning(
                     "Vertex RAG retrieve_contexts not enabled for corpus %s; returning empty context. Error: %s",
                     settings.vertex_rag_corpus_path,
                     exc,
                 )
-                return RagQueryResponse(answers=[], documents=[])
+                return RagQueryResponse(answers=[], documents=[]), []
 
         contexts = list(getattr(response.contexts, "contexts", []))
         if contexts:
             _store_cached_contexts(cache_key, contexts)
+        cache_hit = False
+
+    elapsed = time.time() - start_time
 
     if not contexts:
-        return RagQueryResponse(answers=[RagAnswer(text="No relevant context found.", citations=[])], documents=[])
+        return RagQueryResponse(answers=[RagAnswer(text="No relevant context found.", citations=[])], documents=[]), []
 
     documents: List[RagDocument] = []
     sources_seen: set[str] = set()
@@ -274,7 +281,14 @@ def execute_vertex_search(request: RagQueryRequest) -> RagQueryResponse:
         source_uri = getattr(ctx, "source_uri", "") or ""
         text = getattr(ctx, "text", "") or ""
         distance = getattr(ctx, "distance", None)
-        metadata = {"distance": distance} if distance is not None else None
+        page_label = _extract_page_label(ctx)
+        metadata: Dict[str, object] | None = {}
+        if distance is not None:
+            metadata["distance"] = distance
+        if page_label:
+            metadata["pageLabel"] = page_label
+        if not metadata:
+            metadata = None
         if source_uri not in sources_seen:
             documents.append(
                 RagDocument(
@@ -287,6 +301,21 @@ def execute_vertex_search(request: RagQueryRequest) -> RagQueryResponse:
             )
             sources_seen.add(source_uri)
 
+    _log_retrieval_metrics(
+        cache_hit=cache_hit,
+        question=request.question,
+        tender_id=request.tenderId,
+        page_size=page_size,
+        contexts=contexts,
+    )
+    logger.debug(
+        "retrieval_duration tender=%s question=\"%s\" seconds=%.3f cache_hit=%s",
+        request.tenderId,
+        request.question,
+        elapsed,
+        cache_hit,
+    )
+
     answer_text, citation_source = run_generative_agent(project_id, location, request.question, contexts)
     if not answer_text.strip():
         answer_text = "No relevant context found."
@@ -294,4 +323,262 @@ def execute_vertex_search(request: RagQueryRequest) -> RagQueryResponse:
     if citation_source:
         citations.append(RagCitation(startIndex=None, endIndex=None, sources=[{"sourceUri": citation_source}]))
     answers = [RagAnswer(text=answer_text, citations=citations)]
-    return RagQueryResponse(answers=answers, documents=documents)
+    populate_answer_evidence(answers, documents)
+    return RagQueryResponse(answers=answers, documents=documents), contexts
+
+
+def _estimate_token_length(text: str) -> int:
+    """Rudimentary token estimate based on whitespace splitting."""
+    if not text:
+        return 0
+    return len(text.split())
+
+
+def _log_retrieval_metrics(
+    *,
+    cache_hit: bool,
+    question: str,
+    tender_id: str,
+    page_size: int,
+    contexts: List[object],
+) -> None:
+    char_lengths: List[int] = []
+    token_lengths: List[int] = []
+    sources: List[str] = []
+    for ctx in contexts:
+        ctx_text = getattr(ctx, "text", "") or ""
+        char_lengths.append(len(ctx_text))
+        token_lengths.append(_estimate_token_length(ctx_text))
+        sources.append(getattr(ctx, "source_uri", "") or "")
+
+    if not char_lengths:
+        logger.info(
+            "retrieval_result tender=%s question=\"%s\" page_size=%s cache_hit=%s contexts=0",
+            tender_id,
+            question,
+            page_size,
+            cache_hit,
+        )
+        return
+
+    def _stats(values: List[int]) -> Tuple[int, float, float]:
+        return (
+            len(values),
+            float(statistics.mean(values)),
+            float(statistics.median(values)),
+        )
+
+    ctx_count, chars_mean, chars_median = _stats(char_lengths)
+    _, tokens_mean, tokens_median = _stats(token_lengths)
+
+    logger.info(
+        "retrieval_result tender=%s question=\"%s\" page_size=%s cache_hit=%s contexts=%s chars_mean=%.1f chars_median=%.1f tokens_mean=%.1f tokens_median=%.1f unique_sources=%s",
+        tender_id,
+        question,
+        page_size,
+        cache_hit,
+        ctx_count,
+        chars_mean,
+        chars_median,
+        tokens_mean,
+        tokens_median,
+        len(set(sources)),
+    )
+
+
+def _extract_page_label(ctx: object) -> Optional[str]:
+    def _normalize(value: object) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, list):
+            for item in value:
+                normalized = _normalize(item)
+                if normalized:
+                    return normalized
+            return None
+        if isinstance(value, dict):
+            for key in ("page", "pageNumber", "page_number", "startPage", "endPage", "value"):
+                if key in value:
+                    normalized = _normalize(value[key])
+                    if normalized:
+                        return normalized
+            return None
+        value_str = str(value).strip()
+        return value_str or None
+
+    def _pull_from_dict(data: Dict[str, object]) -> Optional[str]:
+        for key in (
+            "page",
+            "pageNumber",
+            "page_number",
+            "page_label",
+            "pageLabel",
+            "page_label_text",
+            "pageNumbers",
+            "page_numbers",
+        ):
+            if key in data:
+                return _normalize(data[key])
+        return None
+
+    chunk_metadata = getattr(ctx, "chunk_metadata", None)
+    if chunk_metadata is not None:
+        candidate = _normalize(getattr(chunk_metadata, "page", None)) or _normalize(
+            getattr(chunk_metadata, "page_number", None)
+        )
+        if candidate:
+            return candidate
+        try:
+            chunk_dict = MessageToDict(chunk_metadata._pb, preserving_proto_field_name=True)  # type: ignore[attr-defined]
+        except Exception:  # pragma: no cover - best effort
+            chunk_dict = {}
+        if chunk_dict:
+            candidate = _pull_from_dict(chunk_dict)
+            if candidate:
+                return candidate
+
+    metadata = getattr(ctx, "metadata", None)
+    if metadata is not None:
+        if isinstance(metadata, dict):
+            candidate = _pull_from_dict(metadata)
+            if candidate:
+                return candidate
+        else:
+            try:
+                meta_dict = MessageToDict(metadata._pb, preserving_proto_field_name=True)  # type: ignore[attr-defined]
+            except Exception:  # pragma: no cover - best effort
+                meta_dict = {}
+            if meta_dict:
+                candidate = _pull_from_dict(meta_dict)
+                if candidate:
+                    return candidate
+    return None
+
+
+def _clean_snippet(snippet: Optional[str]) -> Optional[str]:
+    if not snippet:
+        return None
+    collapsed = " ".join(snippet.split())
+    max_len = 240
+    if len(collapsed) > max_len:
+        return collapsed[:max_len].rstrip() + "…"
+    return collapsed
+
+
+def _make_snippet_from_match(text: str, start: int, length: int, padding: int = 120) -> Optional[str]:
+    begin = max(0, start - padding)
+    end = min(len(text), start + length + padding)
+    snippet = text[begin:end]
+    return _clean_snippet(snippet)
+
+
+def supplement_answer_evidence_from_contexts(
+    answers: List[RagAnswer],
+    contexts: List[object],
+    *,
+    max_matches: int = 3,
+) -> None:
+    if not answers or not contexts:
+        return
+    for answer in answers:
+        if answer.evidence:
+            continue
+        raw_text = (answer.text or "").strip()
+        if not raw_text:
+            continue
+        lowered = raw_text.lower()
+        if lowered.startswith("no ") or lowered.startswith("not "):
+            continue
+        fragments = [segment.strip() for segment in raw_text.replace("\r", "").split("\n") if segment.strip()]
+        if not fragments:
+            fragments = [raw_text]
+        seen_keys: Set[Tuple[str, Optional[str]]] = set()
+        matches = 0
+        for fragment in fragments:
+            normalized_fragment = fragment.lower()
+            if len(normalized_fragment) < 4:
+                continue
+            for ctx in contexts:
+                ctx_text = getattr(ctx, "text", "") or ""
+                if not ctx_text:
+                    continue
+                ctx_lower = ctx_text.lower()
+                idx = ctx_lower.find(normalized_fragment)
+                if idx == -1:
+                    continue
+                source_uri = getattr(ctx, "source_uri", "") or ""
+                if not source_uri:
+                    continue
+                page_label = _extract_page_label(ctx)
+                key = (source_uri, page_label)
+                if key in seen_keys:
+                    continue
+                snippet = _make_snippet_from_match(ctx_text, idx, len(fragment))
+                answer.evidence.append(
+                    AnswerEvidence(
+                        docId=source_uri,
+                        docTitle=source_uri.split("/")[-1],
+                        docUri=source_uri,
+                        pageLabel=page_label,
+                        snippet=snippet,
+                        distance=None,
+                    )
+                )
+                seen_keys.add(key)
+                matches += 1
+                if matches >= max_matches:
+                    break
+            if matches >= max_matches:
+                break
+
+
+def populate_answer_evidence(answers: List[RagAnswer], documents: List[RagDocument]) -> None:
+    if not answers or not documents:
+        for answer in answers:
+            answer.evidence = []
+        return
+
+    doc_lookup: Dict[str, RagDocument] = {}
+    for doc in documents:
+        if doc.uri:
+            doc_lookup.setdefault(doc.uri, doc)
+        if doc.id:
+            doc_lookup.setdefault(doc.id, doc)
+
+    if not doc_lookup:
+        for answer in answers:
+            answer.evidence = []
+        return
+
+    for answer in answers:
+        entries: List[AnswerEvidence] = []
+        seen: set[Tuple[str, Optional[str]]] = set()
+        for citation in answer.citations or []:
+            for source in citation.sources or []:
+                uri = source.get("sourceUri") or source.get("uri")
+                if not uri:
+                    continue
+                doc = doc_lookup.get(uri)
+                if not doc:
+                    continue
+                metadata = doc.metadata or {}
+                page_label = None
+                if isinstance(metadata, dict):
+                    raw_page = metadata.get("pageLabel") or metadata.get("page") or metadata.get("page_number")
+                    if raw_page is not None:
+                        page_label = str(raw_page).strip() or None
+                key = (uri, page_label)
+                if key in seen:
+                    continue
+                seen.add(key)
+                entries.append(
+                    AnswerEvidence(
+                        docId=doc.id,
+                        docTitle=doc.title,
+                        docUri=doc.uri,
+                        pageLabel=page_label,
+                        snippet=_clean_snippet(doc.snippet),
+                        distance=float(metadata.get("distance")) if isinstance(metadata.get("distance"), (int, float)) else None,
+                    )
+                )
+        answer.evidence = entries

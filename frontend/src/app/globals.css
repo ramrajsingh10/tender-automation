@@ -1,8 +1,22 @@
-﻿@tailwind base;
+@tailwind base;
 @tailwind components;
 @tailwind utilities;
 
-body {
-  @apply min-h-screen bg-white text-slate-900 antialiased;
-}
+@layer base {
+  :root {
+    color-scheme: light;
+  }
 
+  * {
+    @apply border-border;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    @apply min-h-screen bg-background text-foreground antialiased;
+  }
+
+  ::selection {
+    @apply bg-primary/30 text-primary;
+  }
+}

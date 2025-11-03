@@ -43,6 +43,11 @@ docker compose up backend orchestrator ingest-worker
 | `VERTEX_RAG_CORPUS_PATH` | Vertex RAG corpus resource path | _(required)_ |
 | `VERTEX_RAG_CORPUS_LOCATION` | Region for the corpus | _(required)_ |
 | `VERTEX_RAG_GEMINI_MODEL` | Gemini model used for span extraction | `gemini-2.5-flash` |
+| `VERTEX_RAG_CHUNK_SIZE_TOKENS` | Optional fixed-size chunking tokens applied during RagFile import | `0` (disabled) |
+| `VERTEX_RAG_CHUNK_OVERLAP_TOKENS` | Optional overlap used with fixed chunking | `0` (disabled) |
+| `VERTEX_RAG_CACHE_TTL_SECONDS` | TTL for in-process retrieval cache | `300` |
+| `VERTEX_RAG_CACHE_MAX_ENTRIES` | Max cached retrievals held in memory | `64` |
+| `VERTEX_RAG_PLAYBOOK_PACING_SECONDS` | Optional sleep between questions to smooth quota usage | `0` |
 | `RAW_TENDER_BUCKET` | Bucket for raw uploads | `rawtenderdata` |
 | `PARSED_TENDER_BUCKET` | Bucket for playbook output JSON | `parsedtenderdata` |
 

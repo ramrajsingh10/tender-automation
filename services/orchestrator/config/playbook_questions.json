@@ -10,5 +10,29 @@
     "display": "List submission deadlines with dates and times.",
     "prompt": "List every submission related deadline with date and time. Include the schedule label (for example 'Last Date for Submission') and the precise date/time exactly as written. Skip rows that do not contain an actual date or time or that are left blank. Return the answer as a JSON array of objects with fields 'label' and 'value'. Example: [{\"label\": \"Last Date for Submission\", \"value\": \"15/09/2025 15:00\"}].",
     "pageSize": 10
+  },
+  {
+    "id": "submission_start",
+    "display": "Record when tender submissions or document availability begins.",
+    "prompt": "Identify the schedule entry that states when tender submissions open or when tender documents become available (for example 'Start Date for Submission' or 'Date of Availability of Bid Documents'). Capture the exact date and time as written. Return the answer as a JSON array of objects with fields 'label' and 'value'. If no such entry exists, return an empty array.",
+    "pageSize": 10
+  },
+  {
+    "id": "prebid_meeting",
+    "display": "Capture the pre-bid meeting date, time, and mode.",
+    "prompt": "List the pre-bid meeting details, including date, time, and mode/location exactly as stated. If multiple pre-bid sessions exist, include them all. Return the answer as a JSON array of objects with fields 'label' and 'value'. If no pre-bid meeting is mentioned, return an empty array.",
+    "pageSize": 10
+  },
+  {
+    "id": "technical_bid_opening",
+    "display": "Note the opening schedule for the technical bid.",
+    "prompt": "Provide the date and time when the PQ/technical bid or technical proposals will be opened. Use the exact phrasing from the tender schedule. Return the answer as a JSON array of objects with fields 'label' and 'value'. If the document does not specify a technical bid opening, return an empty array.",
+    "pageSize": 10
+  },
+  {
+    "id": "financial_bid_opening",
+    "display": "Note the opening schedule for the financial bid.",
+    "prompt": "Provide the date and time when financial/commercial bids will be opened or communicated. Include any qualifiers such as 'will be notified to shortlisted bidders'. Return the answer as a JSON array of objects with fields 'label' and 'value'. If the document does not specify a financial bid opening, return an empty array.",
+    "pageSize": 10
   }
 ]

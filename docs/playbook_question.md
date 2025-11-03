@@ -1,1 +1,50 @@
-# Playbook Question Expansion\n\n## 1. Basic Tender Details\n- Tender identifier (existing)\n- Issuing authority / department\n- Objective or scope summary\n\n## 2. Submission Timeline\n- Document availability / start date\n- Last date & time for submission\n- Pre-bid meeting date, time, and mode\n- Bid validity / expiry period\n- Evaluation & opening milestones (technical and financial)\n\n## 3. Fees & Financial Requirements\n- Bid processing fee and payment instructions\n- Earnest Money Deposit (EMD) amount, form, validity\n- Performance security / PBG percentage and tenure\n- Payment terms and milestone schedule\n\n## 4. Eligibility & Experience\n- Legal entity requirements\n- Minimum years in operation\n- Average annual turnover requirements\n- Similar project experience (count/description)\n- Resource deployment requirements (onsite roles, numbers)\n\n## 5. Bid Structure & Documents\n- Submission format (covers/envelopes)\n- Mandatory annexures / supporting documents\n- Financial bid format reference\n- Envelope / labeling instructions\n\n## 6. Evaluation & Scoring\n- Technical evaluation criteria (key parameters and weights)\n- Minimum qualifying technical score\n- Financial evaluation method (L1/QCBS formulas)\n- Tie-break rules or QCBS weightings\n\n## 7. Contract Terms\n- Project duration and commencement\n- Service level agreements / penalties\n- Termination or exit clauses\n- IP & confidentiality requirements\n\n## 8. Deliverables & Governance\n- Key deliverables / reporting cadence\n- Implementation team structure / governance\n\n## 9. Contact & Corrigenda\n- Tender contact person and address\n- Corrigendum / updates process\n
+# Playbook Question Expansion
+
+## 1. Basic Tender Details
+- Tender identifier *(implemented)*
+- Issuing authority / department
+- Objective or scope summary
+
+## 2. Submission Timeline
+- **Batch 1 (live):** Document availability / start date, Last date & time for submission, Pre-bid meeting date & time, Technical bid opening milestone, Financial bid opening milestone
+- Bid validity / expiry period
+- Additional evaluation milestones to capture (e.g., presentation dates)
+
+## 3. Fees & Financial Requirements
+- Bid processing fee and payment instructions
+- Earnest Money Deposit (EMD) amount, form, validity
+- Performance security / PBG percentage and tenure
+- Payment terms and milestone schedule
+
+## 4. Eligibility & Experience
+- Legal entity requirements
+- Minimum years in operation
+- Average annual turnover requirements
+- Similar project experience (count/description)
+- Resource deployment requirements (onsite roles, numbers)
+
+## 5. Bid Structure & Documents
+- Submission format (covers/envelopes)
+- Mandatory annexures / supporting documents
+- Financial bid format reference
+- Envelope / labeling instructions
+
+## 6. Evaluation & Scoring
+- Technical evaluation criteria (key parameters and weights)
+- Minimum qualifying technical score
+- Financial evaluation method (L1/QCBS formulas)
+- Tie-break rules or QCBS weightings
+
+## 7. Contract Terms
+- Project duration and commencement
+- Service level agreements / penalties
+- Termination or exit clauses
+- IP & confidentiality requirements
+
+## 8. Deliverables & Governance
+- Key deliverables / reporting cadence
+- Implementation team structure / governance
+
+## 9. Contact & Corrigenda
+- Tender contact person and address
+- Corrigendum / updates process

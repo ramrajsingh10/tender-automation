@@ -25,7 +25,13 @@ from .models import (
 )
 from .pipeline_runner import execute_pipeline
 from .playbook import run_playbook, filter_structured_entries, format_structured_entries
-from .rag import delete_rag_files, execute_vertex_search, map_rag_files_by_uri
+from .rag import (
+    delete_rag_files,
+    execute_vertex_search,
+    map_rag_files_by_uri,
+    populate_answer_evidence,
+    supplement_answer_evidence_from_contexts,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +55,7 @@ def create_app() -> FastAPI:
                 detail="Vertex RAG corpus is not configured. Set VERTEX_RAG_CORPUS_PATH.",
             )
         try:
-            payload = execute_vertex_search(request)
+            payload, contexts = execute_vertex_search(request)
         except google_exceptions.ResourceExhausted as exc:
             logger.warning("RAG query quota exhausted for tender %s: %s", request.tenderId, exc)
             raise HTTPException(
@@ -90,10 +96,11 @@ def create_app() -> FastAPI:
                     citations=[],
                 )
             ]
-        elif has_substantive_answer(payload.answers or []):
-            payload.answers = payload.answers
-        else:
+        elif not has_substantive_answer(payload.answers or []):
             payload.answers = [RagAnswer(text="No relevant context found.", citations=[])]
+
+        populate_answer_evidence(payload.answers, payload.documents)
+        supplement_answer_evidence_from_contexts(payload.answers, contexts)
         return payload
 
     @app.post("/rag/playbook", tags=["rag"])

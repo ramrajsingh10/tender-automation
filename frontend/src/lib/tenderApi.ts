@@ -206,9 +206,19 @@ export interface RagCitation {
   sources?: Array<Record<string, unknown>>;
 }
 
+export interface AnswerEvidence {
+  docId?: string | null;
+  docTitle?: string | null;
+  docUri?: string | null;
+  pageLabel?: string | null;
+  snippet?: string | null;
+  distance?: number | null;
+}
+
 export interface RagAnswer {
   text: string;
   citations: RagCitation[];
+  evidence?: AnswerEvidence[];
 }
 
 export interface RagDocumentSummary {

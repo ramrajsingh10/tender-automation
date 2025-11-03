@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 from datetime import datetime, timezone
 import re
 from functools import lru_cache
@@ -21,7 +23,16 @@ from .models import (
     RagQueryRequest,
     RagQueryResponse,
 )
-from .rag import execute_vertex_search, import_rag_files, map_rag_files_by_uri
+from .rag import execute_vertex_search, import_rag_files, map_rag_files_by_uri, populate_answer_evidence, supplement_answer_evidence_from_contexts
+
+logger = logging.getLogger(__name__)
+
+STRUCTURED_FALLBACK_MESSAGES: Dict[str, str] = {
+    "submission_start": "No submission start date found in the tender bundle.",
+    "prebid_meeting": "No pre-bid meeting information found in the tender bundle.",
+    "technical_bid_opening": "No technical bid opening schedule found in the tender bundle.",
+    "financial_bid_opening": "No financial bid opening schedule found in the tender bundle.",
+}
 
 _DEFAULT_CONFIG: Sequence[Dict[str, object]] = [
     {
@@ -87,9 +98,11 @@ def run_playbook(request: RagPlaybookRequest) -> RagPlaybookResponse:
 
     rag_file_ids_for_query = rag_file_names or None
     results: List[RagPlaybookResult] = []
-    retrieval_cache: Dict[Tuple[str, str], RagQueryResponse] = {}
+    retrieval_cache: Dict[Tuple[str, str], Tuple[RagQueryResponse, List[object]]] = {}
 
-    for question in questions:
+    total_questions = len(questions)
+    for index, question in enumerate(questions):
+        question_start = time.time()
         query_page_size = question.page_size or request.pageSize
         source_uris = list(request.gcsUris) if request.gcsUris else list(rag_file_mapping.keys())
         if not source_uris and request.ragFileIds:
@@ -99,9 +112,9 @@ def run_playbook(request: RagPlaybookRequest) -> RagPlaybookResponse:
 
         cache_key = (question.id, question.prompt.strip())
         if cache_key in retrieval_cache:
-            query_response = retrieval_cache[cache_key]
+            query_response, contexts = retrieval_cache[cache_key]
         else:
-            query_response = execute_vertex_search(
+            query_response, contexts = execute_vertex_search(
                 RagQueryRequest(
                     tenderId=request.tenderId,
                     question=question.prompt,
@@ -110,7 +123,7 @@ def run_playbook(request: RagPlaybookRequest) -> RagPlaybookResponse:
                     ragFileIds=rag_file_ids_for_query,
                 )
             )
-            retrieval_cache[cache_key] = query_response
+            retrieval_cache[cache_key] = (query_response, contexts)
         rag_answers = query_response.answers or []
         structured_entries, raw_text = generate_document_answer(
             question.prompt,
@@ -118,6 +131,16 @@ def run_playbook(request: RagPlaybookRequest) -> RagPlaybookResponse:
             mode="structured",
         )
         filtered_entries = filter_structured_entries(question.id, structured_entries)
+        if not filtered_entries and raw_text:
+            logger.debug(
+                "playbook_raw_structured tender=%s question_id=%s raw_preview=%s",
+                request.tenderId,
+                question.id,
+                raw_text.strip()[:200],
+            )
+            recovered_entries = _recover_entries_from_raw_text(raw_text)
+            if recovered_entries:
+                filtered_entries = filter_structured_entries(question.id, recovered_entries)
 
         answers: List[RagAnswer]
         if filtered_entries:
@@ -127,6 +150,13 @@ def run_playbook(request: RagPlaybookRequest) -> RagPlaybookResponse:
                 RagAnswer(
                     text=formatted_text,
                     citations=citation_list,
+                )
+            ]
+        elif question.id in STRUCTURED_FALLBACK_MESSAGES:
+            answers = [
+                RagAnswer(
+                    text=STRUCTURED_FALLBACK_MESSAGES[question.id],
+                    citations=[],
                 )
             ]
         elif has_substantive_answer(rag_answers):
@@ -142,6 +172,19 @@ def run_playbook(request: RagPlaybookRequest) -> RagPlaybookResponse:
         else:
             answers = [RagAnswer(text="No relevant context found.", citations=[])]
 
+        populate_answer_evidence(answers, query_response.documents)
+        supplement_answer_evidence_from_contexts(answers, contexts)
+
+        duration = time.time() - question_start
+        logger.info(
+            "playbook_question_complete tender=%s question_id=%s question=\"%s\" duration=%.3f answer_len=%s documents=%s",
+            request.tenderId,
+            question.id,
+            question.display,
+            duration,
+            len(answers[0].text) if answers else 0,
+            len(query_response.documents),
+        )
         results.append(
             RagPlaybookResult(
                 questionId=question.id,
@@ -150,6 +193,8 @@ def run_playbook(request: RagPlaybookRequest) -> RagPlaybookResponse:
                 documents=query_response.documents,
             )
         )
+        if settings.vertex_rag_playbook_pacing_seconds > 0 and index < total_questions - 1:
+            time.sleep(settings.vertex_rag_playbook_pacing_seconds)
 
     payload = {
         "tenderId": request.tenderId,
@@ -198,8 +243,17 @@ def filter_structured_entries(question_id: str, entries: List[Dict[str, str]]) -
         if question_id == "document_id":
             if not any(char.isalnum() for char in value):
                 continue
-        if question_id == "submission_deadlines":
+        if question_id in {"submission_deadlines", "prebid_meeting", "technical_bid_opening"}:
             if not _looks_like_schedule(value):
+                continue
+        if question_id == "financial_bid_opening":
+            normalized_value = value.lower()
+            if not (
+                _looks_like_schedule(value)
+                or "notified" in normalized_value
+                or "communicated" in normalized_value
+                or "intimated" in normalized_value
+            ):
                 continue
         key = (label.lower(), value.lower())
         if key in seen:
@@ -207,6 +261,38 @@ def filter_structured_entries(question_id: str, entries: List[Dict[str, str]]) -
         seen.add(key)
         filtered.append({"label": label, "value": value})
     return filtered
+
+
+def _recover_entries_from_raw_text(raw_text: str) -> List[Dict[str, str]]:
+    """Best-effort recovery of label/value pairs from raw Gemini output."""
+    if not raw_text:
+        return []
+    cleaned = raw_text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned[3:]
+        cleaned = cleaned.lstrip()
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:]
+        cleaned = cleaned.lstrip("\n\r")
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3]
+        cleaned = cleaned.strip()
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    recovered: List[Dict[str, str]] = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        label = str(item.get("label", "") or "").strip()
+        value = str(item.get("value", "") or "").strip()
+        if not value:
+            continue
+        recovered.append({"label": label, "value": value})
+    return recovered
 
 
 def format_structured_entries(entries: List[Dict[str, str]]) -> str:

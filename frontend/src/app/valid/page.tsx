@@ -197,7 +197,7 @@ export default function ValidationPage() {
         </p>
         {!isClientReady ? (
           <p className="text-sm text-muted-foreground">
-            Loading tender context…
+            Loading tender context...
           </p>
         ) : !tenderId ? (
           <p className="text-sm text-destructive">
@@ -237,7 +237,7 @@ export default function ValidationPage() {
             playbookRun
               ? "AI answers are ready to review below."
               : statusState === "parsed"
-                ? "Waiting for Vertex AI playbook output… refresh shortly."
+                ? "Waiting for Vertex AI playbook output... refresh shortly."
                 : "Results will appear once processing completes."
           }
           state={
@@ -257,7 +257,7 @@ export default function ValidationPage() {
             className="rounded-md border border-border bg-background px-3 py-1 text-xs font-medium text-foreground transition hover:bg-muted disabled:opacity-50"
             disabled={!tenderId || isStatusLoading}
           >
-            {isStatusLoading ? "Refreshing…" : "Refresh status"}
+            {isStatusLoading ? "Refreshing..." : "Refresh status"}
           </button>
           {tenderStatus?.parse?.outputUri ? (
             <button
@@ -266,7 +266,7 @@ export default function ValidationPage() {
               className="rounded-md border border-border bg-background px-3 py-1 text-xs font-medium text-foreground transition hover:bg-muted disabled:opacity-50"
               disabled={!tenderId || isPlaybookLoading}
             >
-              {isPlaybookLoading ? "Refreshing answers…" : "Refresh answers"}
+              {isPlaybookLoading ? "Refreshing answers..." : "Refresh answers"}
             </button>
           ) : null}
         </div>
@@ -305,7 +305,7 @@ export default function ValidationPage() {
               disabled={isRagLoading || !tenderId}
               className="inline-flex items-center justify-center rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition hover:bg-primary/90 disabled:opacity-60"
             >
-              {isRagLoading ? "Asking…" : "Ask question"}
+              {isRagLoading ? "Asking..." : "Ask question"}
             </button>
             <p className="text-xs text-muted-foreground">
               Results stream back directly from Vertex AI Search.
@@ -389,7 +389,7 @@ export default function ValidationPage() {
               disabled={isDeletingRagFiles}
             >
               {isDeletingRagFiles
-                ? "Removing from corpus�?�"
+                ? "Removing from corpus..."
                 : "Remove from RAG corpus"}
             </button>
           </header>
@@ -401,8 +401,7 @@ export default function ValidationPage() {
                 </span>
                 {item.sourceUri ? (
                   <span className="text-muted-foreground">
-                    {" "}
-                    �+' {item.sourceUri}
+                    {" "}- {item.sourceUri}
                   </span>
                 ) : null}
               </li>
@@ -430,7 +429,7 @@ export default function ValidationPage() {
           ) : null}
         </div>
         {isPlaybookLoading ? (
-          <p className="mt-4 text-sm text-muted-foreground">Loading answers…</p>
+          <p className="mt-4 text-sm text-muted-foreground">Loading answers...</p>
         ) : playbookRun && playbookRun.results.length ? (
           <div className="mt-4 space-y-4">
             {playbookRun.results.map((result) => (

@@ -42,6 +42,7 @@ class Settings:
     vertex_rag_chunk_overlap_tokens: int = int(os.getenv("VERTEX_RAG_CHUNK_OVERLAP_TOKENS", "0"))
     vertex_rag_cache_ttl_seconds: int = int(os.getenv("VERTEX_RAG_CACHE_TTL_SECONDS", "300"))
     vertex_rag_cache_max_entries: int = int(os.getenv("VERTEX_RAG_CACHE_MAX_ENTRIES", "64"))
+    vertex_rag_playbook_pacing_seconds: float = float(os.getenv("VERTEX_RAG_PLAYBOOK_PACING_SECONDS", "0"))
 
 
 settings = Settings(service_map=_load_service_map())
